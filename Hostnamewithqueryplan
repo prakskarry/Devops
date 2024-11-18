@@ -77,3 +77,1830 @@ OUTER APPLY sys.dm_exec_text_query_plan(
     qs.statement_end_offset
 ) qp
 OPTION (RECOMPILE, MAXDOP 1);
+
+GO
+
+--/ WAITS ////////
+;WITH Waits
+AS
+(
+    SELECT 
+        wait_type, wait_time_ms, waiting_tasks_count,signal_wait_time_ms
+        ,wait_time_ms - signal_wait_time_ms AS resource_wait_time_ms
+        ,100. * wait_time_ms / SUM(wait_time_ms) OVER() AS Pct
+        ,100. * SUM(wait_time_ms) OVER(ORDER BY wait_time_ms DESC) /
+            NULLIF(SUM(wait_time_ms) OVER(), 0) AS RunningPct
+        ,ROW_NUMBER() OVER(ORDER BY wait_time_ms DESC) AS RowNum
+    FROM 
+        sys.dm_os_wait_stats WITH (NOLOCK)
+    WHERE 
+        wait_type NOT IN /* Filtering out non-essential system waits */
+        (N'BROKER_EVENTHANDLER',N'BROKER_RECEIVE_WAITFOR',N'BROKER_TASK_STOP'
+        ,N'BROKER_TO_FLUSH',N'BROKER_TRANSMITTER',N'CHECKPOINT_QUEUE',N'CHKPT'
+        ,N'CLR_SEMAPHORE',N'CLR_AUTO_EVENT',N'CLR_MANUAL_EVENT'
+        ,N'DBMIRROR_DBM_EVENT',N'DBMIRROR_EVENTS_QUEUE',N'DBMIRROR_WORKER_QUEUE'
+        ,N'DBMIRRORING_CMD',N'DIRTY_PAGE_POLL',N'DISPATCHER_QUEUE_SEMAPHORE'
+        ,N'EXECSYNC',N'FSAGENT',N'FT_IFTS_SCHEDULER_IDLE_WAIT',N'FT_IFTSHC_MUTEX'
+		,N'HADR_CLUSAPI_CALL',N'HADR_FILESTREAM_IOMGR_IOCOMPLETION'
+    	,N'HADR_LOGCAPTURE_WAIT',N'HADR_NOTIFICATION_DEQUEUE'
+        ,N'HADR_TIMER_TASK',N'HADR_WORK_QUEUE',N'KSOURCE_WAKEUP',N'LAZYWRITER_SLEEP'
+        ,N'LOGMGR_QUEUE',N'ONDEMAND_TASK_QUEUE'
+        ,N'PARALLEL_REDO_WORKER_WAIT_WORK',N'PARALLEL_REDO_DRAIN_WORKER'
+        ,N'PARALLEL_REDO_LOG_CACHE',N'PARALLEL_REDO_TRAN_LIST'
+        ,N'PARALLEL_REDO_WORKER_SYNC',N'PREEMPTIVE_SP_SERVER_DIAGNOSTICS'
+        ,N'PREEMPTIVE_OS_LIBRARYOPS',N'PREEMPTIVE_OS_COMOPS', N'PREEMPTIVE_OS_PIPEOPS'
+        ,N'PREEMPTIVE_OS_GENERICOPS',N'PREEMPTIVE_OS_VERIFYTRUST'
+        ,N'PREEMPTIVE_OS_FILEOPS',N'PREEMPTIVE_OS_DEVICEOPS'
+        ,N'PREEMPTIVE_OS_QUERYREGISTRY',N'PREEMPTIVE_XE_CALLBACKEXECUTE'
+        ,N'PREEMPTIVE_XE_DISPATCHER',N'PREEMPTIVE_XE_GETTARGETSTATE'
+        ,N'PREEMPTIVE_XE_SESSIONCOMMIT',N'PREEMPTIVE_XE_TARGETINIT'
+        ,N'PREEMPTIVE_XE_TARGETFINALIZE',N'PWAIT_ALL_COMPONENTS_INITIALIZED'
+        ,N'PWAIT_DIRECTLOGCONSUMER_GETNEXT',N'PWAIT_EXTENSIBILITY_CLEANUP_TASK'
+        ,N'QDS_PERSIST_TASK_MAIN_LOOP_SLEEP',N'QDS_ASYNC_QUEUE'
+        ,N'QDS_CLEANUP_STALE_QUERIES_TASK_MAIN_LOOP_SLEEP'
+        ,N'REQUEST_FOR_DEADLOCK_SEARCH',N'RESOURCE_QUEUE',N'SERVER_IDLE_CHECK'
+        ,N'SLEEP_BPOOL_FLUSH',N'SLEEP_DBSTARTUP',N'SLEEP_DCOMSTARTUP'
+        ,N'SLEEP_MASTERDBREADY',N'SLEEP_MASTERMDREADY',N'SLEEP_MASTERUPGRADED'
+        ,N'SLEEP_MSDBSTARTUP',N'SLEEP_SYSTEMTASK',N'SLEEP_TASK'
+        ,N'SLEEP_TEMPDBSTARTUP',N'SNI_HTTP_ACCEPT',N'SOS_WORK_DISPATCHER'
+        ,N'SP_SERVER_DIAGNOSTICS_SLEEP',N'SQLTRACE_BUFFER_FLUSH'
+        ,N'SQLTRACE_INCREMENTAL_FLUSH_SLEEP',N'SQLTRACE_WAIT_ENTRIES'
+        ,N'STARTUP_DEPENDENCY_MANAGER',N'WAIT_FOR_RESULTS'
+        ,N'WAITFOR',N'WAITFOR_TASKSHUTDOWN',N'WAIT_XTP_HOST_WAIT'
+        ,N'WAIT_XTP_OFFLINE_CKPT_NEW_LOG',N'WAIT_XTP_CKPT_CLOSE',N'WAIT_XTP_RECOVERY'
+        ,N'XE_BUFFERMGR_ALLPROCESSED_EVENT',N'XE_DISPATCHER_JOIN',N'XE_DISPATCHER_WAIT'
+        ,N'XE_LIVE_TARGET_TVF',N'XE_TIMER_EVENT',N'PREEMPTIVE_OS_WSASETLASTERROR')
+)
+SELECT
+    w1.wait_type AS [Wait Type]
+    ,w1.waiting_tasks_count AS [Wait Count]
+    ,CONVERT(DECIMAL(12,3), w1.wait_time_ms / 1000.0) AS [Wait Time]
+    ,CONVERT(DECIMAL(12,1), w1.wait_time_ms / w1.waiting_tasks_count) 
+        AS [Avg Wait Time]
+    ,CONVERT(DECIMAL(12,3), w1.signal_wait_time_ms / 1000.0) 
+        AS [Signal Wait Time]
+    ,CONVERT(DECIMAL(12,1), w1.signal_wait_time_ms / w1.waiting_tasks_count) 
+        AS [Avg Signal Wait Time]
+    ,CONVERT(DECIMAL(12,3), w1.resource_wait_time_ms / 1000.0) 
+        AS [Resource Wait Time]
+    ,CONVERT(DECIMAL(12,1), w1.resource_wait_time_ms / w1.waiting_tasks_count) 
+        AS [Avg Resource Wait Time]
+    ,CONVERT(DECIMAL(6,3), w1.Pct) 
+        AS [Percent]
+    ,CONVERT(DECIMAL(6,3), w1.RunningPct) 
+        AS [Running Percent]
+FROM
+	Waits w1
+WHERE
+	w1.RunningPct <= 99 OR w1.RowNum = 1
+ORDER BY
+	w1. RunningPct  
+OPTION (RECOMPILE, MAXDOP 1);
+
+GO
+-- Signal waits should not exceed 15% - ideally be less han 10%. Higher numbers may indicate CPU bottleneck
+SELECT
+    SUM(signal_wait_time_ms) AS [Signal Wait Time (ms)]
+    ,CONVERT(DECIMAL(7,4), 100.0 * SUM (signal_wait_time_ms) / 
+        SUM(wait_time_ms)) AS [% Signal waits]
+    ,SUM(wait_time_ms - signal_wait_time_ms) AS [Resource Wait Time (ms)]
+    ,CONVERT (DECIMAL(7,4), 100.0 * sum(wait_time_ms - signal_wait_time_ms) / 
+        SUM(wait_time_ms)) AS [% Resource waits]
+FROM
+    sys.dm_os_wait_stats WITH (NOLOCK)
+OPTION (MAXDOP 1, RECOMPILE);
+
+GO
+ --Change session_id in WHERE clause in CTE
+;WITH Waits
+AS
+(
+    SELECT
+        wait_type, wait_time_ms, waiting_tasks_count,signal_wait_time_ms
+	    ,wait_time_ms - signal_wait_time_ms AS resource_wait_time_ms
+	    ,100. * wait_time_ms / SUM(wait_time_ms) OVER() AS Pct
+	    ,100. * SUM(wait_time_ms) OVER(ORDER BY wait_time_ms DESC) /
+    		NULLIF(SUM(wait_time_ms) OVER(), 0) AS RunningPct
+	    ,ROW_NUMBER() OVER(ORDER BY wait_time_ms DESC) AS RowNum
+    FROM sys.dm_exec_session_wait_stats WITH (NOLOCK)
+    WHERE session_id = 69
+)
+SELECT
+    w1.wait_type AS [Wait Type]
+    ,w1.waiting_tasks_count AS [Wait Count]
+    ,CONVERT(DECIMAL(12,3), w1.wait_time_ms / 1000.0) AS [Wait Time]
+    ,CONVERT(DECIMAL(12,1), w1.wait_time_ms / w1.waiting_tasks_count) 
+        AS [Avg Wait Time]
+    ,CONVERT(DECIMAL(12,3), w1.signal_wait_time_ms / 1000.0) 
+        AS [Signal Wait Time]
+    ,CONVERT(DECIMAL(12,1), w1.signal_wait_time_ms / w1.waiting_tasks_count) 
+        AS [Avg Signal Wait Time]
+    ,CONVERT(DECIMAL(12,3), w1.resource_wait_time_ms / 1000.0) 
+        AS [Resource Wait Time]
+    ,CONVERT(DECIMAL(12,1), w1.resource_wait_time_ms / w1.waiting_tasks_count) 
+        AS [Avg Resource Wait Time]
+    ,CONVERT(DECIMAL(6,3), w1.Pct) 
+        AS [Percent]
+    ,CONVERT(DECIMAL(6,3), w1.RunningPct) 
+        AS [Running Percent]
+FROM
+	Waits w1
+WHERE
+	w1.RunningPct <= 99 OR w1.RowNum = 1
+ORDER BY
+	w1. RunningPct  
+OPTION (RECOMPILE, MAXDOP 1);
+
+-- Session informaton ////////////////////
+
+--Sort based on your troubleshooting strategy. For example, by cpu_time, if you look for the most CPU-intensive queries, (logical_reads + writes) for I/O intensive queries, etc
+
+
+SELECT	
+    er.session_id
+    ,er.request_id
+    ,DB_NAME(er.database_id) as [database]
+    ,er.start_time
+    ,CONVERT(DECIMAL(21,3),er.total_elapsed_time / 1000.) AS [duration]
+    ,er.cpu_time
+    ,SUBSTRING(
+        qt.text, 
+        (er.statement_start_offset / 2) + 1,
+            ((CASE er.statement_end_offset
+                WHEN -1 THEN DATALENGTH(qt.text)
+                ELSE er.statement_end_offset
+            END - er.statement_start_offset) / 2) + 1
+    ) AS [statement]
+    ,er.status
+    ,er.wait_type
+    ,er.wait_time
+    ,er.wait_resource
+    ,er.blocking_session_id
+    ,er.last_wait_type
+    ,er.reads
+    ,er.logical_reads
+    ,er.writes
+    ,er.granted_query_memory
+    ,er.dop -- SQL Server 2016+
+    ,er.row_count
+    ,er.percent_complete
+    ,es.login_time
+    ,es.original_login_name
+    ,es.host_name
+    ,es.program_name
+    ,c.client_net_address
+    ,ib.event_info AS [buffer]
+    ,qt.text AS [sql]
+    ,TRY_CONVERT(XML,p.query_plan) as [query_plan]
+FROM	
+    sys.dm_exec_requests er WITH (NOLOCK)
+        OUTER APPLY sys.dm_exec_input_buffer(er.session_id, er.request_id) ib
+        OUTER APPLY sys.dm_exec_sql_text(er.sql_handle) qt
+        OUTER APPLY 
+            sys.dm_exec_text_query_plan
+            (
+                er.plan_handle
+                ,er.statement_start_offset
+                ,er.statement_end_offset
+            ) p
+        LEFT JOIN sys.dm_exec_connections c WITH (NOLOCK) ON 
+            er.session_id = c.session_id 
+        LEFT JOIN sys.dm_exec_sessions es WITH (NOLOCK) ON 
+            er.session_id = es.session_id
+WHERE
+    er.status <> 'background' 
+    AND er.session_id > 50
+ORDER BY 
+    er.cpu_time desc
+OPTION (RECOMPILE, MAXDOP 1);
+     
+--Get the list of active requests in the system using lightweight profiling instead of regular query plan
+
+
+
+SELECT	
+    er.session_id
+    ,er.request_id
+    ,DB_NAME(er.database_id) as [database]
+    ,er.start_time
+    ,CONVERT(DECIMAL(21,3),er.total_elapsed_time / 1000.) AS [duration]
+    ,er.cpu_time
+    ,SUBSTRING(
+        qt.text, 
+        (er.statement_start_offset / 2) + 1,
+        ((CASE er.statement_end_offset
+            WHEN -1 THEN DATALENGTH(qt.text)
+            ELSE er.statement_end_offset
+        END - er.statement_start_offset) / 2) + 1
+    ) AS [statement]
+    ,er.status
+    ,er.wait_type
+    ,er.wait_time
+    ,er.wait_resource
+    ,er.blocking_session_id
+    ,er.last_wait_type
+    ,er.reads
+    ,er.logical_reads
+    ,er.writes
+    ,er.granted_query_memory
+    ,er.dop
+    ,er.row_count
+    ,er.percent_complete
+    ,es.login_time
+    ,es.original_login_name
+    ,es.host_name
+    ,es.program_name
+    ,c.client_net_address
+    ,ib.event_info AS [buffer]
+    ,qt.text AS [sql]
+    ,p.query_plan
+FROM	
+    sys.dm_exec_requests er WITH (NOLOCK)
+        OUTER APPLY sys.dm_exec_input_buffer(er.session_id, er.request_id) ib
+        OUTER APPLY sys.dm_exec_sql_text(er.sql_handle) qt
+        OUTER APPLY sys.dm_exec_query_statistics_xml(er.session_id) p
+        LEFT JOIN sys.dm_exec_connections c WITH (NOLOCK) ON 
+            er.session_id = c.session_id 
+        LEFT JOIN sys.dm_exec_sessions es WITH (NOLOCK) ON 
+            er.session_id = es.session_id
+WHERE
+    er.status <> 'background'
+    AND er.session_id > 50
+ORDER BY 
+    er.cpu_time desc
+OPTION (RECOMPILE, MAXDOP 1);
+
+     
+--Schedulers information Pay attention to the number of online schedulers per NUMA node. Uneven distribution will impact system performance
+
+
+SELECT 
+    parent_node_id AS [NUMA Node]
+    ,COUNT(*) AS [Schedulers]
+    ,SUM(IIF(status = N'VISIBLE ONLINE',1,0))
+        AS [Online Schedulers]
+    ,SUM(IIF(status = N'VISIBLE OFFLINE',1,0))
+        AS [Offline Schedulers]
+    ,SUM(current_tasks_count) 
+        AS [Current Tasks] 
+    ,SUM(runnable_tasks_count) 
+        AS [Runnable Tasks] 
+FROM 
+    sys.dm_os_schedulers WITH (NOLOCK)
+WHERE 
+    status IN (N'VISIBLE ONLINE',N'VISIBLE OFFLINE') 
+GROUP BY 
+    parent_node_id
+OPTION (RECOMPILE, MAXDOP 1);
+     
+--The list of currently waiting tasks
+
+SELECT
+	wt.session_id
+	,wt.wait_type
+	,wt.wait_duration_ms
+	,wt.blocking_session_id
+	,wt.resource_description
+FROM 
+	sys.dm_os_waiting_tasks wt WITH (NOLOCK)
+WHERE
+	wt.session_id > 50
+ORDER BY
+	wt.wait_duration_ms DESC
+OPTION (MAXDOP 1, RECOMPILE);
+     
+--Get connection information for the sessions Set the session_id in WHERE clause if you want to troubleshoot the single session/connection
+
+
+SELECT
+	ec.session_id
+	,DB_NAME(s.database_id) AS [database] -- SQL Server 2012+
+	,s.login_time 
+	,s.host_name
+	,s.program_name
+	,s.login_name
+	,s.original_login_name
+	,s.cpu_time
+	,s.last_request_start_time
+	,s.reads
+	,s.writes
+	,ec.connect_time
+	,qt.text AS [SQL]
+FROM 
+	sys.dm_exec_connections ec WITH (NOLOCK)
+		LEFT JOIN sys.dm_exec_sessions s WITH (NOLOCK) ON
+			ec.session_id = s.session_id
+		OUTER APPLY
+			sys.dm_exec_sql_text(ec.most_recent_sql_handle) qt
+--WHERE
+--	ec.session_id = 51 -- session id of the session
+ORDER BY
+    session_id
+OPTION (MAXDOP 1, RECOMPILE)
+     
+--Waiting tasks with connection information
+
+
+SELECT
+	wt.session_id
+	,DB_NAME(s1.database_id) AS [database] -- SQL Server 2012+
+	,wt.wait_type
+	,wt.wait_duration_ms
+	,wt.blocking_session_id
+	,wt.resource_description
+	,s2.login_time AS [blocking_login_time]
+	,s2.host_name AS [blocking_host_name]
+	,s2.program_name AS [blocking_program_name]
+	,s2.login_name AS [blocking_login_name]
+	,s2.original_login_name AS [blocking_original_login]
+	,s2.cpu_time AS [blocking_cpu_time]
+	,s2.last_request_start_time AS [blocking_request_start_time]
+	,s2.reads AS [blocking_reads]
+	,s2.writes AS [blocking_writes]
+	,ec2.connect_time AS [blocking_connect_time]
+	,qt2.text AS [blocking_sql]  
+    ,s1.login_time AS [blocked_login_time]
+	,s1.host_name AS [blocked_host_name]
+	,s1.program_name AS [blocked_program_name]
+	,s1.login_name AS [blocked_login_name]
+	,s1.original_login_name AS [blocked_original_login]
+	,s1.cpu_time AS [blocked_cpu_time]
+	,s1.last_request_start_time AS [blocked_request_start_time]
+	,s1.reads AS [blocked_reads]
+	,s1.writes AS [blocked_writes]
+	,ec1.connect_time AS [blocked_connect_time]
+	,qt1.text AS [blocked_sql] 
+FROM 
+	sys.dm_os_waiting_tasks wt WITH (NOLOCK)
+	    JOIN sys.dm_exec_connections ec1 WITH (NOLOCK) ON
+            wt.session_id = ec1.session_id
+		LEFT JOIN sys.dm_exec_sessions s1 WITH (NOLOCK) ON
+			ec1.session_id = s1.session_id
+		OUTER APPLY
+			sys.dm_exec_sql_text(ec1.most_recent_sql_handle) qt1    
+	    LEFT JOIN sys.dm_exec_connections ec2 WITH (NOLOCK) ON
+            wt.blocking_session_id = ec2.session_id
+		LEFT JOIN sys.dm_exec_sessions s2 WITH (NOLOCK) ON
+			ec2.session_id = s2.session_id
+		OUTER APPLY
+			sys.dm_exec_sql_text(ec2.most_recent_sql_handle) qt2               
+WHERE
+	wt.session_id > 50
+ORDER BY
+	wt.wait_duration_ms DESC
+OPTION (MAXDOP 1, RECOMPILE);
+
+-- DISK //////
+
+SELECT 
+	fs.database_id AS [DB ID]
+	,fs.file_id AS [File Id]
+	,mf.name AS [File Name]
+	,mf.physical_name AS [File Path]
+	,mf.type_desc AS [Type]
+	,fs.sample_ms AS [Time]
+	,fs.num_of_reads AS [Reads]
+	,fs.num_of_bytes_read AS [Read Bytes]
+	,fs.num_of_writes AS [Writes]
+	,fs.num_of_bytes_written AS [Written Bytes]
+	,fs.num_of_reads + fs.num_of_writes AS [IO Count]
+	,CONVERT(DECIMAL(5,2),100.0 * fs.num_of_bytes_read / 
+		(fs.num_of_bytes_read + fs.num_of_bytes_written)) AS [Read %]
+	,CONVERT(DECIMAL(5,2),100.0 * fs.num_of_bytes_written / 
+		(fs.num_of_bytes_read + fs.num_of_bytes_written)) AS [Write %]
+	,fs.io_stall_read_ms AS [Read Stall]
+	,fs.io_stall_write_ms AS [Write Stall]
+	,CASE WHEN fs.num_of_reads = 0 
+		THEN 0.000
+		ELSE CONVERT(DECIMAL(12,3),1.0 * 
+			fs.io_stall_read_ms / fs.num_of_reads) 
+	END AS [Avg Read Stall] 
+	,CASE WHEN fs.num_of_writes = 0 
+		THEN 0.000
+		ELSE CONVERT(DECIMAL(12,3),1.0 * 
+			fs.io_stall_write_ms / fs.num_of_writes) 
+	END AS [Avg Write Stall] 
+FROM 
+	sys.dm_io_virtual_file_stats(null,null) fs JOIN 
+		sys.master_files mf WITH (NOLOCK) ON
+			fs.database_id = mf.database_id AND
+			fs.file_id = mf.file_id     
+	JOIN sys.databases d WITH (NOLOCK) ON
+		d.database_id = fs.database_id  
+WHERE
+	fs.num_of_reads + fs.num_of_writes > 0
+OPTION (MAXDOP 1, RECOMPILE);
+
+GO
+--Stall columns indicate latency of I/O requests. Lower is better
+
+
+IF OBJECT_ID(N'tempdb..#Snapshot') IS NOT NULL
+	DROP TABLE #Snapshot;
+GO
+
+CREATE TABLE #Snapshot
+(
+	database_id SMALLINT NOT NULL,
+	file_id SMALLINT NOT NULL,
+	num_of_reads BIGINT NOT NULL,
+	num_of_bytes_read BIGINT NOT NULL,
+	io_stall_read_ms BIGINT NOT NULL,
+	num_of_writes BIGINT NOT NULL,
+	num_of_bytes_written BIGINT NOT NULL,
+	io_stall_write_ms BIGINT NOT NULL
+);
+
+INSERT INTO #Snapshot(database_id,file_id,num_of_reads,num_of_bytes_read
+	,io_stall_read_ms,num_of_writes,num_of_bytes_written,io_stall_write_ms)
+	SELECT database_id,file_id,num_of_reads,num_of_bytes_read
+		,io_stall_read_ms,num_of_writes,num_of_bytes_written,io_stall_write_ms
+	FROM sys.dm_io_virtual_file_stats(NULL,NULL)
+OPTION (MAXDOP 1, RECOMPILE);
+
+-- Set test interval (1 minute). Use larger intervals as needed
+WAITFOR DELAY '00:01:00.000';
+
+;WITH Stats(db_id, file_id, Reads, ReadBytes, Writes
+	,WrittenBytes, ReadStall, WriteStall)
+as
+(
+	SELECT
+		s.database_id, s.file_id
+		,fs.num_of_reads - s.num_of_reads
+		,fs.num_of_bytes_read - s.num_of_bytes_read
+		,fs.num_of_writes - s.num_of_writes
+		,fs.num_of_bytes_written - s.num_of_bytes_written
+		,fs.io_stall_read_ms - s.io_stall_read_ms
+		,fs.io_stall_write_ms - s.io_stall_write_ms
+	FROM
+		#Snapshot s JOIN  sys.dm_io_virtual_file_stats(NULL, NULL) fs ON
+			s.database_id = fs.database_id and s.file_id = fs.file_id
+)
+SELECT
+	s.db_id AS [DB ID], d.name AS [Database]
+	,mf.name AS [File Name], mf.physical_name AS [File Path]
+	,mf.type_desc AS [Type], s.Reads 
+	,CONVERT(DECIMAL(12,3), s.ReadBytes / 1048576.) AS [Read MB]
+	,CONVERT(DECIMAL(12,3), s.WrittenBytes / 1048576.) AS [Written MB]
+	,s.Writes, s.Reads + s.Writes AS [IO Count]
+	,CONVERT(DECIMAL(5,2),100.0 * s.ReadBytes / 
+			(s.ReadBytes + s.WrittenBytes)) AS [Read %]
+	,CONVERT(DECIMAL(5,2),100.0 * s.WrittenBytes / 
+			(s.ReadBytes + s.WrittenBytes)) AS [Write %]
+	,s.ReadStall AS [Read Stall]
+	,s.WriteStall AS [Write Stall]
+	,CASE WHEN s.Reads = 0 
+		THEN 0.000
+		ELSE CONVERT(DECIMAL(12,3),1.0 * s.ReadStall / s.Reads) 
+	END AS [Avg Read Stall] 
+	,CASE WHEN s.Writes = 0 
+		THEN 0.000
+		ELSE CONVERT(DECIMAL(12,3),1.0 * s.WriteStall / s.Writes) 
+	END AS [Avg Write Stall] 
+FROM
+	Stats s JOIN  sys.master_files mf WITH (NOLOCK) ON
+		s.db_id = mf.database_id and
+		s.file_id = mf.file_id
+	JOIN  sys.databases d WITH (NOLOCK) ON 
+		s.db_id = d.database_id  
+WHERE -- Only display files with more than 20MB throughput. Increase with larger sample times
+	(s.ReadBytes + s.WrittenBytes) > 20 * 1048576
+ORDER BY
+	s.db_id, s.file_id
+OPTION (MAXDOP 1, RECOMPILE);
+
+
+GO
+--I/O related performace counters
+
+
+IF OBJECT_ID(N'tempdb..#PerfCntrs') IS NOT NULL
+	DROP TABLE #PerfCntrs;
+GO
+
+CREATE TABLE #PerfCntrs
+(
+	collected_time DATETIME2(7) NOT NULL DEFAULT SYSDATETIME(),
+	object_name SYSNAME NOT NULL,
+	counter_name SYSNAME NOT NULL,
+	instance_name SYSNAME NOT NULL,
+	cntr_value BIGINT NOT NULL,
+	PRIMARY KEY (object_name, counter_name, instance_name)
+);
+
+;WITH Counters(obj_name, ctr_name)
+AS
+(
+	SELECT C.obj_name, C.ctr_name
+	FROM 
+	(
+		VALUES
+			('SQLServer:Buffer Manager','Checkpoint pages/sec')
+			,('SQLServer:Buffer Manager','Background writer pages/sec')
+			,('SQLServer:Buffer Manager','Lazy writes/sec')
+			,('SQLServer:Buffer Manager','Page reads/sec')
+			,('SQLServer:Buffer Manager','Page writes/sec')
+			,('SQLServer:Buffer Manager','Readahead pages/sec')
+			,('SQLServer:Databases','Log Flushes/sec') -- For all DBs
+			,('SQLServer:Databases','Log Bytes Flushed/sec') -- For all DBs
+			,('SQLServer:Databases','Log Flush Write Time (ms)') -- For all DBs
+			,('SQLServer:Databases','Transactions/sec') -- For all DBs
+			,('SQLServer:SQL Statistics','Batch Requests/sec') 
+	) C(obj_name, ctr_name)
+)
+INSERT INTO #PerfCntrs(object_name,counter_name,instance_name,cntr_value)
+	SELECT 
+		pc.object_name, pc.counter_name, pc.instance_name, pc.cntr_value
+	FROM 
+		sys.dm_os_performance_counters pc WITH (NOLOCK) JOIN Counters c ON
+			pc.counter_name = c.ctr_name AND pc.object_name = c.obj_name;
+
+WAITFOR DELAY '00:00:01.000';
+
+;WITH Counters(obj_name, ctr_name)
+AS
+(
+	SELECT C.obj_name, C.ctr_name
+	FROM 
+	(
+		VALUES
+			('SQLServer:Buffer Manager','Checkpoint pages/sec')
+			,('SQLServer:Buffer Manager','Background writer pages/sec')
+			,('SQLServer:Buffer Manager','Lazy writes/sec')
+			,('SQLServer:Buffer Manager','Page reads/sec')
+			,('SQLServer:Buffer Manager','Page writes/sec')
+			,('SQLServer:Buffer Manager','Readahead pages/sec')
+			,('SQLServer:Databases','Log Flushes/sec') -- For all DBs
+			,('SQLServer:Databases','Log Bytes Flushed/sec') -- For all DBs
+			,('SQLServer:Databases','Log Flush Write Time (ms)') -- For all DBs
+			,('SQLServer:Databases','Transactions/sec') -- For all DBs
+			,('SQLServer:SQL Statistics','Batch Requests/sec') 
+	) C(obj_name, ctr_name)
+)
+SELECT 
+	pc.object_name, pc.counter_name, pc.instance_name
+	,CASE pc.cntr_type
+		WHEN 272696576 THEN 
+			(pc.cntr_value - h.cntr_value) * 1000 / 
+				DATEDIFF(MILLISECOND,h.collected_time,SYSDATETIME())
+		WHEN 65792 THEN 
+			pc.cntr_value
+		ELSE NULL
+	END as cntr_value
+FROM 
+	sys.dm_os_performance_counters pc WITH (NOLOCK) JOIN Counters c ON
+		pc.counter_name = c.ctr_name AND pc.object_name = c.obj_name
+	JOIN #PerfCntrs h ON
+		pc.object_name = h.object_name AND
+		pc.counter_name = h.counter_name AND
+		pc.instance_name = h.instance_name
+ORDER BY
+	pc.object_name, pc.counter_name, pc.instance_name
+OPTION (RECOMPILE);
+     
+--io_pending column indicates if OS I/O API call has been completed and request is waiting for available scheduler to finalize. 
+
+--Undocumented io_pending_ms_ticks indicates the duration
+
+
+SELECT    
+    ip.io_type
+    ,ip.io_pending
+    ,io_pending_ms_ticks
+    ,ip.scheduler_address
+    ,ip.io_handle
+    ,s.scheduler_id
+    ,s.cpu_id
+    ,s.pending_disk_io_count
+    ,er.session_id
+    ,er.command
+    ,er.cpu_time
+    ,SUBSTRING(
+        qt.text, 
+        (er.statement_start_offset / 2) + 1,
+            ((CASE er.statement_end_offset
+                WHEN -1 THEN DATALENGTH(qt.text)
+                ELSE er.statement_end_offset
+            END - er.statement_start_offset) / 2) + 1
+    ) AS [statement]
+FROM 
+    sys.dm_io_pending_io_requests ip WITH (NOLOCK)
+        LEFT JOIN sys.dm_os_schedulers s WITH (NOLOCK) ON 
+            ip.scheduler_address = s.scheduler_address
+        LEFT JOIN sys.dm_exec_requests er ON 
+            s.scheduler_id = er.scheduler_id
+        OUTER APPLY 
+            sys.dm_exec_sql_text(er.sql_handle) qt
+OPTION (MAXDOP 1, RECOMPILE);
+     
+--Page Life Expectancy (PLE)
+
+
+SELECT object_name, counter_name, instance_name, cntr_value as [PLE(sec)]
+FROM sys.dm_os_performance_counters WITH (NOLOCK) 
+WHERE counter_name = 'Page life expectancy'
+OPTION (MAXDOP 1, RECOMPILE);
+     
+--Suspect Pages
+
+
+SELECT 
+    DB_NAME(database_id) AS [database]
+    ,file_id
+    ,page_id
+    ,event_type
+    ,error_count
+    , last_update_date 
+FROM msdb.dbo.suspect_pages WITH (NOLOCK)
+ORDER BY database_id 
+OPTION (MAXDOP 1,RECOMPILE);
+     
+     
+
+
+	 -- CPU /////////////////////
+
+	 --Get Average CPU Load for the last 256 minutes
+
+
+DECLARE
+    @now BIGINT;
+	 
+SELECT @now = cpu_ticks / (cpu_ticks / ms_ticks) 
+FROM sys.dm_os_sys_info WITH (NOLOCK);
+
+;WITH RingBufferData([timestamp], rec)
+AS
+(
+    SELECT [timestamp], CONVERT(XML, record) AS rec 
+    FROM sys.dm_os_ring_buffers WITH (NOLOCK)
+    WHERE 
+        ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' AND
+        record LIKE N'%%'
+)
+,Data(id, SystemIdle, SQLCPU, [timestamp])
+AS 
+(
+    SELECT
+        rec.value('(./Record/@id)[1]', 'int') 
+        ,rec.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]','int')
+        ,rec.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]','int') 
+        ,[timestamp] 
+  FROM RingBufferData
+)
+SELECT TOP 256 
+    dateadd(MS, -1 * (@now - [timestamp]), getdate()) AS [Event Time] 
+    ,SQLCPU AS [SQL Server CPU Utilization] 
+    ,SystemIdle AS [System Idle]
+    ,100 - SystemIdle - SQLCPU AS [Other Processes CPU Utilization]
+FROM Data
+ORDER BY id desc
+OPTION (RECOMPILE, MAXDOP 1);
+     
+--CPU load per-database
+
+--This uses plan cache so the output is imprecise
+
+
+;WITH DBCPU
+AS
+(
+    SELECT 
+        pa.DBID, DB_NAME(pa.DBID) AS [DB]
+        ,SUM(qs.total_worker_time/1000) AS [CPUTime]
+    FROM 
+        sys.dm_exec_query_stats qs WITH (NOLOCK)
+        CROSS APPLY 
+        (
+            SELECT CONVERT(INT, value) AS [DBID] 
+            FROM sys.dm_exec_plan_attributes(qs.plan_handle)
+            WHERE attribute = N'dbid'
+        ) AS pa
+    GROUP BY pa.DBID
+)
+SELECT 
+    [DB]
+    ,[CPUTime] AS [CPU Time (ms)]
+    ,CONVERT(decimal(5,2), 1. *[CPUTime] / 
+        SUM([CPUTime]) OVER() * 100.0) AS [CPU Percent]
+FROM DBCPU
+WHERE DBID <> 32767 -- ResourceDB
+ORDER BY [CPUTime] DESC
+OPTION (RECOMPILE, MAXDOP 1);
+
+-- Memeory ////////
+
+--Checking Minimum and Maximum Server Memory Settings
+
+
+SELECT *
+FROM sys.configurations WITH (NOLOCK)
+WHERE name IN (N'min server memory (MB)', 'max server memory (MB)')
+OPTION (MAXDOP 1, RECOMPILE);
+     
+--OS Memory Usage
+
+
+SELECT 
+    total_physical_memory_kb / 1024 AS [Physical Memory (MB)] 
+    ,available_physical_memory_kb / 1024 AS [Available Memory (MB)] 
+    ,total_page_file_kb / 1024 AS [Page File Commit Limit (MB)]
+    ,available_page_file_kb / 1024 AS [Available Page File (MB)] 
+    ,(total_page_file_kb - total_physical_memory_kb) / 1024 
+        AS [Physical Page File Size (MB)]
+    ,system_cache_kb / 1024 AS [System Cache (MB)]
+    /* Values: LOW/HIGH/STEADY */
+    ,system_memory_state_desc AS [System Memory State] 
+FROM sys.dm_os_sys_memory WITH (NOLOCK)
+OPTION (RECOMPILE, MAXDOP 1);
+     
+--SQL Server Memory Usage
+
+
+SELECT 
+    physical_memory_in_use_kb / 1024 
+        AS [SQL Server Memory Usage (MB)]
+    ,locked_page_allocations_kb / 1024 
+        AS [SQL Server Locked Pages Allocation (MB)]
+    ,large_page_allocations_kb / 1024 
+        AS [SQL Server Large Pages Allocation (MB)] 
+    ,memory_utilization_percentage
+    ,available_commit_limit_kb
+    ,process_physical_memory_low /* May indicate memory pressure */
+    ,process_virtual_memory_low
+FROM sys.dm_os_process_memory WITH (NOLOCK)
+OPTION (RECOMPILE, MAXDOP 1);
+     
+--NUMA Memory Usage
+
+
+SELECT 
+	n.node_id
+	,n.node_state_desc
+	,n.memory_node_id
+	,n.online_scheduler_count
+	,CONVERT(DECIMAL(16,3), m.pages_kb /1024.) AS committed_memory_mb
+	,CONVERT(DECIMAL(16,3), m.locked_page_allocations_kb / 1024.) AS locked_memory_mb 
+	,CONVERT(DECIMAL(16,3), m.foreign_committed_kb / 1024.) AS foreign_memory_mb
+	,CONVERT(DECIMAL(16,3), m.target_kb / 1024.) AS target_memory_mb -- SQL Server 2016+
+FROM 
+	sys.dm_os_nodes n WITH (NOLOCK)
+		JOIN sys.dm_os_memory_nodes m WITH (NOLOCK) ON 
+			n.memory_node_id = m.memory_node_id
+WHERE 
+	n.node_state_desc <> N'ONLINE DAC' 
+OPTION (MAXDOP 1, RECOMPILE);
+     
+--Page Life Expectancy
+
+
+SELECT object_name, counter_name, instance_name, cntr_value as [PLE(sec)]
+FROM sys.dm_os_performance_counters WITH (NOLOCK) 
+WHERE counter_name = 'Page life expectancy'
+OPTION (MAXDOP 1,RECOMPILE);
+     
+--Database Buffer Pool Usage
+
+
+;WITH BufPoolStats
+AS
+(
+    SELECT 
+        database_id
+        ,COUNT_BIG(*) AS page_count
+        ,CONVERT(DECIMAL(16,3),COUNT_BIG(*) * 8 / 1024.) AS size_mb
+        ,AVG(read_microsec) AS avg_read_microsec
+    FROM 
+        sys.dm_os_buffer_descriptors WITH (NOLOCK)
+    GROUP BY 
+        database_id
+)
+SELECT 
+    DB_NAME(database_id) AS [DB]
+    ,size_mb
+    ,page_count
+    ,avg_read_microsec
+    ,CONVERT(DECIMAL(5,2), 100. * (size_mb / SUM(size_mb) OVER())) 
+        AS [Percent]
+FROM 
+    BufPoolStats
+ORDER BY 
+    size_mb DESC
+OPTION (MAXDOP 1, RECOMPILE);
+     
+--Memory Clerk Memory Usage
+
+
+SELECT TOP 15
+    [type] AS [Memory Clerk]
+    ,CONVERT(DECIMAL(16,3),SUM(pages_kb) / 1024.0) AS [Memory Usage(MB)]
+FROM sys.dm_os_memory_clerks WITH (NOLOCK)
+GROUP BY [type]
+ORDER BY sum(pages_kb) DESC
+OPTION (RECOMPILE, MAXDOP 1);
+     
+--Analyzing memory grants.
+
+--Uncomment WHERE clause if you want to see pending requests only
+
+
+SELECT
+    mg.session_id
+    ,t.text AS [sql]
+    ,qp.query_plan AS [plan]
+    ,mg.is_small  /* Resource Semaphore Queue information */
+    ,mg.dop
+    ,mg.query_cost
+    ,mg.request_time
+    ,mg.grant_time
+    ,mg.wait_time_ms
+    ,mg.required_memory_kb
+    ,mg.requested_memory_kb
+    ,mg.granted_memory_kb
+    ,mg.used_memory_kb
+    ,mg.max_used_memory_kb
+    ,mg.ideal_memory_kb
+FROM
+    sys.dm_exec_query_memory_grants mg WITH (NOLOCK)
+        CROSS APPLY sys.dm_exec_sql_text(mg.sql_handle) t
+        CROSS APPLY sys.dm_exec_query_plan(mg.plan_handle) qp
+--WHERE 
+--    mg.grant_time IS NULL
+ORDER BY
+    mg.requested_memory_kb DESC
+OPTION (RECOMPILE, MAXDOP 1);
+
+GO
+-- BLOCKING //////////////
+
+SELECT
+   tl1.resource_type AS [Resource Type]
+   ,DB_NAME(tl1.resource_database_id) AS [DB]
+   ,CASE tl1.resource_type
+      WHEN 'OBJECT' THEN 
+         OBJECT_NAME(tl1.resource_associated_entity_id,tl1.resource_database_id)
+      WHEN 'DATABASE' THEN
+         'DATABASE'
+      ELSE
+         CASE
+            WHEN tl1.resource_database_id = db_id() 
+            THEN
+            (
+               SELECT OBJECT_NAME(object_id,tl1.resource_database_id)
+               FROM sys.partitions WITH (NOLOCK)
+               WHERE hobt_id = tl1.resource_associated_entity_id
+            )
+            ELSE
+               '(Run under DB context)'
+         END
+   END AS [Object]
+   ,tl1.resource_description AS [Resource]
+   ,tl1.request_session_id AS [Session]
+   ,tl1.request_mode AS [Mode]
+   ,tl1.request_status AS [Status]
+   ,wt.wait_duration_ms AS [Wait (ms)]
+   ,es.login_time
+   ,es.original_login_name
+   ,es.host_name
+   ,es.program_name
+   ,c.client_net_address   
+   ,query.sql
+   ,query.query_plan						
+FROM
+   sys.dm_tran_locks tl1 WITH (NOLOCK) 
+		JOIN sys.dm_tran_locks tl2 WITH (NOLOCK) ON
+			tl1.resource_associated_entity_id =
+				tl2.resource_associated_entity_id
+		LEFT OUTER JOIN sys.dm_os_waiting_tasks wt WITH (NOLOCK) ON
+			tl1.lock_owner_address =wt.resource_address AND 
+			tl1.request_status = 'WAIT'
+		LEFT JOIN sys.dm_exec_connections c WITH (NOLOCK) ON 
+			tl1.request_session_id = c.session_id 
+		LEFT JOIN sys.dm_exec_sessions es WITH (NOLOCK) ON 
+			tl1.request_session_id = es.session_id       	
+		OUTER APPLY
+		(
+			SELECT
+				SUBSTRING(S.text, (er.statement_start_offset/2)+1,
+				((
+					CASE er.statement_end_offset
+						WHEN -1 THEN DATALENGTH(S.text)
+						ELSE er.statement_end_offset
+					END - er.statement_start_offset)/2)+1
+				) AS [sql]
+				,TRY_CAST(qp.query_plan AS XML) AS query_plan
+			FROM 
+				sys.dm_exec_requests er WITH (NOLOCK)
+				CROSS APPLY sys.dm_exec_sql_text(er.sql_handle) S
+				OUTER APPLY sys.dm_exec_text_query_plan
+				(
+					er.plan_handle
+					,er.statement_start_offset
+					,er.statement_end_offset
+				) qp
+			WHERE
+				tl1.request_session_id = er.session_id
+		) query
+WHERE
+	tl1.request_session_id <> @@SPID AND
+	tl1.request_status <> tl2.request_status AND
+	(
+		tl1.resource_description = tl2.resource_description OR
+		(
+			tl1.resource_description IS NULL AND 
+			tl2.resource_description IS NULL
+		)
+	)
+ORDER BY
+   tl1.request_session_id
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Blocking Chains
+
+
+IF OBJECT_ID(N'tempdb..#BlockedSessions') IS NOT NULL
+	DROP TABLE #BlockedSessions;
+GO
+
+CREATE TABLE #BlockedSessions
+(
+	session_id INT NOT NULL PRIMARY KEY,
+	blocking_session_id INT NULL,
+	wait_type SYSNAME NULL, 
+	[sql] NVARCHAR(MAX)
+);
+
+INSERT INTO #BlockedSessions(session_id, blocking_session_id, wait_type, [sql])
+	SELECT 
+		er.session_id, er.blocking_session_id, er.wait_type
+		,SUBSTRING(
+			qt.text, 
+	 		(er.statement_start_offset / 2) + 1,
+			((CASE er.statement_end_offset
+				WHEN -1 THEN datalength(qt.text)
+				ELSE er.statement_end_offset
+			END - er.statement_start_offset) / 2) + 1
+		) 
+	FROM 
+		sys.dm_exec_requests er WITH (NOLOCK)
+			OUTER APPLY sys.dm_exec_sql_text(er.sql_handle) qt
+	WHERE 
+		er.wait_type LIKE 'LCK_M%';
+
+CREATE INDEX i1 ON #BlockedSessions(blocking_session_id); 
+
+;WITH Locking(level, session_id, blocking_session_id, [sql])
+AS
+(
+	SELECT 0, b.blocking_session_id, null, qt.text as sql
+	FROM 
+		#BlockedSessions b LEFT JOIN sys.dm_exec_requests er WITH (NOLOCK) ON
+			b.blocking_session_id = er.session_id
+		OUTER APPLY sys.dm_exec_sql_text(er.sql_handle) qt  
+	WHERE
+		b.blocking_session_id not in (SELECT session_id from #BlockedSessions)
+
+	UNION ALL
+	
+	SELECT level + 1, b.session_id, b.blocking_session_id, b.[sql]
+	FROM #BlockedSessions b JOIN Locking l ON 
+		b.blocking_session_id = l.session_id
+)
+SELECT 
+	l.level, l.session_id, l.blocking_session_id, l.[sql], c.BlockedCnt
+FROM 
+	Locking l CROSS APPLY
+	(
+		SELECT COUNT(*) AS BlockedCnt
+		FROM #BlockedSessions b 
+		WHERE b.blocking_session_id = l.session_id
+	) c
+ORDER BY l.level, c.BlockedCnt;
+
+SELECT * FROM #BlockedSessions;
+
+--- DETECTING Oldest transaction using row versioning
+
+SELECT TOP 5
+    at.transaction_id
+    ,at.elapsed_time_seconds
+    ,at.session_id
+    ,s.login_time
+    ,s.login_name
+    ,s.host_name
+    ,s.program_name
+    ,s.last_request_start_time
+    ,s.last_request_end_time
+    ,er.status
+    ,er.wait_type
+    ,er.wait_time
+    ,er.blocking_session_id
+    ,er.last_wait_type
+    ,st.text AS [SQL]
+FROM
+    sys.dm_tran_active_snapshot_database_transactions at WITH (NOLOCK)
+        JOIN sys.dm_exec_sessions s WITH (NOLOCK) on 
+            at.session_id = s.session_id
+        LEFT JOIN sys.dm_exec_requests er WITH (NOLOCK) on
+            at.session_id = er.session_id
+        OUTER APPLY
+            sys.dm_exec_sql_text(er.sql_handle) st
+ORDER BY
+    at.elapsed_time_seconds DESC
+OPTION (MAXDOP 1, RECOMPILE);
+     
+	 GO
+
+
+	 -- dATABASE TABLE ANALYSIS
+/*
+
+--Getting list of heap tables
+
+--Evaluate if they would benefit from clustered indexes (see index usage scripts below)
+
+
+SELECT 
+    t.object_id
+    ,s.name + '.' + t.name AS [table]
+    ,p.rows
+FROM 
+    sys.tables t WITH (NOLOCK) 
+        JOIN sys.schemas s WITH (NOLOCK) ON
+            t.schema_id = s.schema_id
+        CROSS APPLY
+         (
+            SELECT SUM(p.rows) AS [rows]
+            FROM sys.partitions p WITH (NOLOCK) 
+            WHERE t.object_id = p.object_id AND p.index_id = 0
+        ) p
+WHERE
+    t.is_memory_optimized = 0 AND -- SQL Server 2014+
+    t.is_ms_shipped = 0 AND
+    EXISTS 
+     (
+        SELECT *
+        FROM sys.indexes i WITH (NOLOCK)
+        WHERE t.object_id = i.object_id AND i.index_id = 0
+    )
+ORDER BY
+    p.rows DESC
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Inefficient heap tables
+
+Look at number of forwarded pointers as they add an overhead during data access. Also review internal fragmentation as it wastes space Rebuild tables as needed.
+
+
+SELECT TOP 25
+    t.object_id
+    ,s.name + '.' + t.name AS [table]
+    ,SUM(ips.record_count) AS [rows]
+    ,SUM(ips.forwarded_record_count) 
+            AS [forwarding pointers]
+    ,SUM(ips.avg_page_space_used_in_percent * ips.page_count) / 
+        NULLIF(SUM(ips.page_count),0) 
+            AS [internal fragmentation %]
+FROM 
+    sys.tables t WITH (NOLOCK) 
+        JOIN sys.schemas s WITH (NOLOCK) ON
+            t.schema_id = s.schema_id
+        CROSS APPLY
+            sys.dm_db_index_physical_stats
+                (DB_ID(),t.object_id,0,NULL,'DETAILED') ips
+WHERE
+    t.is_memory_optimized = 0 AND -- SQL Server 2014+
+    t.is_ms_shipped = 0 AND
+    EXISTS 
+    (
+        SELECT *
+        FROM sys.indexes i WITH (NOLOCK)
+        WHERE t.object_id = i.object_id AND i.index_id = 0
+    )
+GROUP BY
+    t.object_id, s.name, t.name
+ORDER BY
+     [forwarding pointers] DESC 
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Uniqueidentifiers
+
+Usually. they introduce fragmentation and other issues.
+
+
+SELECT
+    t.object_id
+    ,s.name + '.' + t.name AS [table]
+    ,i.name AS [index]
+    ,i.is_disabled
+    ,p.rows
+FROM 
+    sys.tables t WITH (NOLOCK) 
+        JOIN sys.schemas s WITH (NOLOCK) ON
+            t.schema_id = s.schema_id
+        JOIN sys.indexes i WITH (NOLOCK) ON
+            t.object_id = i.object_id
+        CROSS APPLY
+        (
+            SELECT SUM(p.rows) AS [rows]
+            FROM sys.partitions p WITH (NOLOCK) 
+            WHERE i.object_id = p.object_id AND i.index_id = p.index_id
+        ) p
+WHERE
+    t.is_memory_optimized = 0 AND -- SQL Server 2014+
+    i.type in (1,2) AND /* CI and NCI */
+    i.is_hypothetical = 0 AND
+    EXISTS 
+    (
+        SELECT *
+        FROM 
+            sys.index_columns ic WITH (NOLOCK)
+                JOIN sys.columns c WITH (NOLOCK) ON
+                    ic.object_id = c.object_id AND
+                    ic.column_id = c.column_id
+        WHERE 
+            ic.object_id = i.object_id AND
+            ic.index_id = i.index_id AND
+            ic.key_ordinal = 1 AND
+            c.system_type_id = 36 /* uniqueidentifier */
+    )
+ORDER BY
+    p.[rows] DESC
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Wide clustered indexes
+
+
+SELECT TOP 25
+    t.object_id
+    ,s.name + '.' + t.name AS [table]
+    ,p.rows
+    ,ic.[max length]
+FROM 
+    sys.tables t WITH (NOLOCK) 
+        JOIN sys.schemas s WITH (NOLOCK) ON
+            t.schema_id = s.schema_id
+        CROSS APPLY
+        (
+            SELECT SUM(p.rows) AS [rows]
+            FROM sys.partitions p WITH (NOLOCK) 
+            WHERE t.object_id = p.object_id AND p.index_id = 1
+        ) p
+        CROSS APPLY
+        (
+            SELECT SUM(c.max_length) as [max length]
+            FROM 
+                sys.indexes i  
+                    JOIN sys.index_columns ic WITH (NOLOCK) ON
+                        i.object_id = ic.object_id AND
+                        i.index_id = ic.index_id AND
+                        ic.is_included_column = 0
+                    JOIN sys.columns c WITH (NOLOCK) ON
+                        ic.object_id = c.object_id AND
+                        ic.column_id = c.column_id
+            WHERE 
+                i.object_id = t.object_id AND
+                i.index_id = 1 AND
+                i.type = 1
+        ) ic
+WHERE
+    t.is_memory_optimized = 0 AND -- SQL Server 2014+
+    1 = 1
+ORDER BY
+    ic.[max length] DESC
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Non-unique clustered indexes
+
+Check if data there is unique and redefine them if possible
+
+
+SELECT 
+    t.object_id
+    ,s.name + '.' + t.name AS [table]
+    ,p.rows
+FROM 
+    sys.tables t WITH (NOLOCK) 
+        JOIN sys.schemas s WITH (NOLOCK) ON
+            t.schema_id = s.schema_id
+        CROSS APPLY
+        (
+            SELECT SUM(p.rows) AS [rows]
+            FROM sys.partitions p WITH (NOLOCK) 
+            WHERE t.object_id = p.object_id AND p.index_id = 1
+        ) p
+WHERE
+    t.is_memory_optimized = 0 AND -- SQL Server 2014+
+    EXISTS 
+    (
+        SELECT *
+        FROM sys.indexes i WITH (NOLOCK)
+        WHERE 
+            t.object_id = i.object_id AND
+            i.index_id = 1 AND
+            i.is_unique = 0 AND
+            i.type = 1 /* CI */
+    )
+ORDER BY
+    p.[rows] DESC
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Untrusted foreign keys
+
+Validate foreign keys with ALTER TABLE WITH CHECK CHECK CONSTRAINT statement. This will lock the table with Sch-M lock for the duration of validation
+
+
+SELECT
+    fk.is_disabled
+    ,fk.is_not_trusted
+    ,fk.name AS [FK]
+    ,ps.name + '.' + pt.name AS [Referencing Table / Detail]
+    ,rs.name + '.' + rt.name AS [Referenced Table / Master]
+    ,fk.update_referential_action_desc
+    ,fk.delete_referential_action_desc
+FROM 
+    sys.foreign_keys fk WITH (NOLOCK) 
+        JOIN sys.tables pt WITH (NOLOCK) ON 
+            fk.parent_object_id = pt.object_id 
+        JOIN sys.schemas ps WITH (NOLOCK) ON 
+            pt.schema_id = ps.schema_id
+        JOIN sys.tables rt WITH (NOLOCK) ON 
+            fk.referenced_object_id = rt.object_id 
+        JOIN sys.schemas rs WITH (NOLOCK) ON 
+            rt.schema_id = rs.schema_id
+WHERE
+    fk.is_not_trusted = 1 OR fk.is_disabled = 1
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Potentially non-indexed foreign keys
+
+Review the output and create indexes as needed. The script will return false positive if there are filtered indexes that support referential integrity
+
+
+SELECT
+    fk.is_disabled
+    ,fk.is_not_trusted
+    ,fk.name as [FK]
+    ,ps.name + '.' + pt.name AS [Referencing Table / Detail]
+    ,rs.name + '.' + rt.name AS [Referenced Table / Master]
+    ,fk.update_referential_action_desc
+    ,fk.delete_referential_action_desc
+    ,fk_cols.cols as [fk columns]
+FROM 
+    sys.foreign_keys fk WITH (NOLOCK) 
+        JOIN sys.tables pt WITH (NOLOCK) ON 
+            fk.parent_object_id = pt.object_id 
+        JOIN sys.schemas ps WITH (NOLOCK) ON 
+            pt.schema_id = ps.schema_id
+        JOIN sys.tables rt WITH (NOLOCK) ON 
+            fk.referenced_object_id = rt.object_id 
+        JOIN sys.schemas rs WITH (NOLOCK) ON 
+            rt.schema_id = rs.schema_id
+        CROSS APPLY
+        (
+            SELECT 
+                (
+                    SELECT 
+                        UPPER(col.name) AS [text()]
+                        ,',' AS [text()]
+                    FROM 
+                        sys.foreign_key_columns fkc WITH (NOLOCK)
+                            JOIN sys.columns col WITH (NOLOCK) ON
+                                fkc.parent_object_id = col.object_id AND
+                                fkc.parent_column_id = col.column_id
+                    WHERE 
+                        fkc.constraint_object_id = fk.object_id
+                    ORDER BY 
+                        fkc.constraint_column_id
+                    FOR XML PATH('')
+                ) as cols
+        ) fk_cols
+WHERE
+    NOT EXISTS
+    (
+        SELECT *
+        FROM 
+            sys.indexes i WITH (NOLOCK)
+                CROSS APPLY
+                (
+                    SELECT
+                        (
+                            SELECT
+                                UPPER(col.name) AS [text()]
+                                ,',' AS [text()]
+                            FROM 
+                                sys.index_columns ic WITH (NOLOCK) 
+                                    JOIN sys.columns col WITH (NOLOCK) ON
+                                        ic.object_id = col.object_id AND
+                                        ic.column_id = col.column_id
+                            WHERE
+                                i.object_id = ic.object_id AND
+                                i.index_id = ic.index_id AND
+                                ic.is_included_column = 0
+                            ORDER BY
+                                ic.partition_ordinal
+                            FOR XML PATH('')
+                        ) AS cols
+                ) idx_col
+        WHERE
+            i.object_id = fk.parent_object_id AND
+            CHARINDEX(fk_cols.cols,idx_col.cols) = 1 AND
+            i.is_disabled = 0 AND
+            i.is_hypothetical = 0 AND
+            i.has_filter = 0 AND
+            i.type IN (1,2)
+    )
+ORDER BY
+    [Referenced Table / Master]
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Potentially redundant indexes
+
+Review the indexes in the output especially those with FullOverlap. Use for index consolidation
+
+
+SELECT
+    s.name + '.' + t.name AS [Table]
+    ,i1.index_id AS [I1 ID]
+    ,i1.name AS [I1 Name]
+    ,dupIdx.index_id AS [I2 ID]
+    ,dupIdx.name AS [I2 Name] 
+    ,LEFT(i1_col.key_col,LEN(i1_col.key_col) - 1) AS [I1 Keys]
+    ,LEFT(i1_col.included_col,LEN(i1_col.included_col) - 1) AS [I1 Included Col]
+    ,i1.filter_definition AS [I1 Filter]
+    ,LEFT(i2_col.key_col,LEN(i2_col.key_col) - 1) AS [I2 Keys]
+    ,LEFT(i2_col.included_col,LEN(i2_col.included_col) - 1) AS [I2 Included Col]
+    ,dupIdx.filter_definition AS [I2 Filter]
+    ,IIF(
+        CHARINDEX(i1_col.key_col, i2_col.key_col) = 1 OR
+        CHARINDEX(i2_col.key_col, i1_col.key_col) = 1,'Yes','No'
+    ) AS [Fully Redundant]
+FROM 
+    sys.tables t WITH (NOLOCK) 
+        JOIN sys.indexes i1 wITH (NOLOCK) ON
+            t.object_id = i1.object_id
+        JOIN sys.index_columns ic1 WITH (NOLOCK) ON
+            ic1.object_id = i1.object_id AND
+            ic1.index_id = i1.index_id AND 
+            ic1.key_ordinal = 1  
+        JOIN sys.columns c WITH (NOLOCK) ON
+            c.object_id = ic1.object_id AND
+            c.column_id = ic1.column_id      
+        JOIN sys.schemas s WITH (NOLOCK) ON 
+            t.schema_id = s.schema_id
+        CROSS APPLY
+        (
+            SELECT i2.index_id, i2.name, i2.filter_definition
+            FROM
+                sys.indexes i2 WITH (NOLOCK) 
+                    JOIN sys.index_columns ic2 WITH (NOLOCK) ON       
+                        ic2.object_id = i2.object_id AND
+                        ic2.index_id = i2.index_id AND 
+                        ic2.key_ordinal = 1  
+            WHERE    
+                i2.object_id = i1.object_id AND 
+                i2.index_id > i1.index_id AND 
+                ic2.column_id = ic1.column_id AND
+                i2.type in (1,2) AND
+                i2.is_disabled = 0 AND 
+                i2.is_hypothetical = 0 AND
+                (
+                    i1.has_filter = i2.has_filter AND
+                    ISNULL(i1.filter_definition,'') = 
+                        ISNULL(i2.filter_definition,'')
+                )
+        ) dupIdx
+        CROSS APPLY
+        (
+            SELECT
+                (
+                    SELECT 
+                        col.name AS [text()]
+                        ,IIF(icol_meta.is_descending_key = 1, ' DESC','') 
+                            AS [text()]
+                        ,',' AS [text()]
+                    FROM                 
+                        sys.index_columns icol_meta WITH (NOLOCK) 
+                            JOIN sys.columns col WITH (NOLOCK) ON
+                                icol_meta.object_id = col.object_id AND
+                                icol_meta.column_id = col.column_id
+                    WHERE
+                        icol_meta.object_id = i1.object_id AND
+                        icol_meta.index_id = i1.index_id AND
+                        icol_meta.is_included_column = 0
+                    ORDER BY
+                        icol_meta.key_ordinal
+                    FOR XML PATH('')
+                ) AS key_col
+                ,(                
+                    SELECT 
+                        col.name AS [text()]
+                        ,',' AS [text()]
+                    FROM                 
+                        sys.index_columns icol_meta WITH (NOLOCK) 
+                            JOIN sys.columns col WITH (NOLOCK) ON
+                                icol_meta.object_id = col.object_id AND
+                                icol_meta.column_id = col.column_id
+                    WHERE
+                        icol_meta.object_id = i1.object_id AND
+                        icol_meta.index_id = i1.index_id AND
+                        icol_meta.is_included_column = 1
+                    ORDER BY
+                        col.name
+                    FOR XML PATH('')
+                ) AS included_col
+        ) i1_col
+        CROSS APPLY
+        (
+            SELECT
+                (
+                    SELECT 
+                        col.name AS [text()]
+                        ,IIF(icol_meta.is_descending_key = 1, ' DESC','') 
+                            AS [text()]
+                        ,',' AS [text()]
+                    FROM                 
+                        sys.index_columns icol_meta WITH (NOLOCK) 
+                            JOIN sys.columns col WITH (NOLOCK) ON
+                                icol_meta.object_id = col.object_id AND
+                                icol_meta.column_id = col.column_id
+                    WHERE
+                        icol_meta.object_id = t.object_id AND
+                        icol_meta.index_id = dupIdx.index_id AND
+                        icol_meta.is_included_column = 0
+                    ORDER BY
+                        icol_meta.key_ordinal
+                    FOR XML PATH('')
+                ) AS key_col
+                ,(                
+                    SELECT 
+                        col.name AS [text()]
+                        ,',' AS [text()]
+                    FROM                 
+                        sys.index_columns icol_meta WITH (NOLOCK) 
+                            JOIN sys.columns col WITH (NOLOCK) ON
+                                icol_meta.object_id = col.object_id AND
+                                icol_meta.column_id = col.column_id
+                    WHERE
+                        icol_meta.object_id = t.object_id AND
+                        icol_meta.index_id = dupIdx.index_id AND
+                        icol_meta.is_included_column = 1
+                    ORDER BY
+                        col.name
+                    FOR XML PATH('')
+                ) AS included_col
+        ) i2_col
+WHERE
+    i1.is_disabled = 0 AND
+    i1.is_hypothetical = 0 AND
+    i1.type in (1,2) 
+ORDER BY
+    s.name, t.name, i1.index_id
+OPTION (RECOMPILE, MAXDOP 1);
+
+     
+High identity values
+
+
+DECLARE
+	@Types TABLE
+	(
+		type_id INT NOT NULL PRIMARY KEY,
+		name SYSNAME NOT NULL,
+		max_val DECIMAL(38) NOT NULL
+	)
+
+INSERT INTO @Types(type_id, name, max_val)
+VALUES
+	(48,'TINYINT',255)
+	,(52,'SMALLINT',32767)
+	,(56,'INT',2147483647)
+	,(127,'BIGINT',9223372036854775807)
+	,(108,'NUMERIC',99999999999999999999999999999999999999)  -- 10^38-1
+	,(106,'DECIMAL',99999999999999999999999999999999999999); -- 10^38-1
+
+DECLARE 
+	@percentThreshold INT = 50;
+
+;WITH CTE
+AS
+(
+	SELECT 
+		s.name + '.' + t.name AS [table]
+		,c.name AS [column]
+		,tp.name + IIF(tp.type_id IN (106,108), '(' + CONVERT(VARCHAR(2),c.precision) + ')','') AS [type]
+		,CONVERT(DECIMAL(38),IDENT_CURRENT(t.name)) AS [identity]
+		,CASE
+			WHEN tp.type_id IN (106,108) 
+			THEN 
+				CASE 
+					WHEN c.precision < 38
+					THEN POWER(CONVERT(DECIMAL(38),10),c.precision) - 1
+					ELSE tp.max_val
+				END
+			ELSE
+				tp.max_val
+		END AS [max value]
+	FROM
+		sys.tables t WITH (NOLOCK) 
+			JOIN sys.schemas s WITH (NOLOCK) ON
+				t.schema_id = s.schema_id
+			JOIN sys.columns c WITH (NOLOCK) ON 
+				c.object_id = t.object_id
+			JOIN @Types tp ON
+				tp.type_id = c.system_type_id
+	WHERE  
+		c.is_identity = 1 
+)
+SELECT *,CONVERT(DECIMAL(6,3),[identity] / [max value] * 100.) AS [percent full] 
+FROM CTE
+WHERE CONVERT(DECIMAL(6,3),[identity] / [max value] * 100.) > @percentThreshold 
+ORDER BY [percent full] DESC;
+     
+High sequence values
+
+
+DECLARE
+	@Types TABLE
+	(
+		type_id INT NOT NULL PRIMARY KEY,
+		name SYSNAME NOT NULL,
+		max_val DECIMAL(38) NOT NULL
+	)
+
+INSERT INTO @Types(type_id, name, max_val)
+VALUES
+	(48,'TINYINT',255)
+	,(52,'SMALLINT',32767)
+	,(56,'INT',2147483647)
+	,(127,'BIGINT',9223372036854775807)
+	,(108,'NUMERIC',99999999999999999999999999999999999999)  -- 10^38-1
+	,(106,'DECIMAL',99999999999999999999999999999999999999); -- 10^38-1
+
+DECLARE 
+	@percentThreshold INT = 50;
+
+;WITH CTE
+AS
+(
+	SELECT 
+		s.name + '.' + seq.name AS [sequence]
+		,tp.name AS [type]
+		,CASE tp.type_id
+			WHEN 48 THEN CONVERT(DECIMAL(38),CONVERT(TINYINT,seq.current_value))
+			WHEN 52 THEN CONVERT(DECIMAL(38),CONVERT(SMALLINT,seq.current_value))
+			WHEN 56 THEN CONVERT(DECIMAL(38),CONVERT(INT,seq.current_value))
+			WHEN 127 THEN CONVERT(DECIMAL(38),CONVERT(BIGINT,seq.current_value))
+			WHEN 106 THEN CONVERT(DECIMAL(38),seq.current_value)
+			WHEN 108 THEN CONVERT(DECIMAL(38),seq.current_value)
+		END as [current]
+		,CASE tp.type_id
+			WHEN 48 THEN CONVERT(DECIMAL(38),CONVERT(TINYINT,seq.maximum_value))
+			WHEN 52 THEN CONVERT(DECIMAL(38),CONVERT(SMALLINT,seq.maximum_value))
+			WHEN 56 THEN CONVERT(DECIMAL(38),CONVERT(INT,seq.maximum_value))
+			WHEN 127 THEN CONVERT(DECIMAL(38),CONVERT(BIGINT,seq.maximum_value))
+			WHEN 106 THEN CONVERT(DECIMAL(38),seq.maximum_value)
+			WHEN 108 THEN CONVERT(DECIMAL(38),seq.maximum_value)
+		END AS [max value]	
+	FROM
+		sys.sequences seq WITH (NOLOCK) 
+			JOIN sys.schemas s WITH (NOLOCK) ON
+				seq.schema_id = s.schema_id
+			JOIN @Types tp ON
+				tp.type_id = seq.system_type_id
+)
+SELECT *, CONVERT(DECIMAL(6,3), [current] / [max value] * 100.) as [percent full] 
+FROM CTE
+WHERE CONVERT(DECIMAL(6,3), [current] / [max value] * 100.) > @percentThreshold 
+ORDER BY [percent full] DESC;
+     
+Maximum values of index keys
+
+Credits to Erland Sommarskog (https://www.sommarskog.se)
+
+
+DECLARE
+    @Types table
+    (
+        type_id int not null primary key,
+        name sysname not null,
+        max_val bigint not null
+    )
+
+INSERT INTO @Types(type_id, name, max_val)
+VALUES
+    (48,'tinyint',255)
+    ,(52,'smallint',32767)
+    ,(56,'int',2147483647)
+    ,(127,'bigint',9223372036854775807
+)
+
+DECLARE @sql nvarchar(MAX),
+        @tblname nvarchar(512),
+        @colname nvarchar(256),
+        @maxkey bigint,
+        @maxval bigint,
+        @threshold decimal(10,2) = 0.5,
+        @tblcur CURSOR
+
+SET @tblcur = CURSOR STATIC FOR
+   SELECT quotename(s.name) + '.' +  quotename(t.name), quotename(c.name),
+          Ty.max_val
+   FROM   sys.tables t
+   JOIN   sys.schemas s ON s.schema_id = t.schema_id
+   JOIN   sys.columns c ON t.object_id = c.object_id
+   JOIN   @Types Ty ON c.system_type_id = Ty.type_id
+   WHERE  EXISTS (SELECT *
+                  FROM   sys.indexes i
+                  JOIN   sys.index_columns ic ON ic.object_id = i.object_id
+                                             AND ic.index_id  = i.index_id
+                                             AND ic.key_ordinal = 1
+                  WHERE  i.object_id = t.object_id
+                    AND  ic.column_id = c.column_id
+                    AND  (i.is_primary_key = 1 OR
+                          i.is_unique_constraint = 1)
+                    AND  i.is_hypothetical = 0
+                    AND  NOT EXISTS (SELECT *
+                                     FROM   sys.index_columns ic2
+                                     WHERE  ic2.object_id = i.object_id
+                                       AND  ic2.index_id  = i.index_id
+                                       AND  ic2.key_ordinal > 1))
+   ORDER BY 1
+                      
+
+OPEN @tblcur
+
+WHILE 1 = 1
+BEGIN 
+   FETCH @tblcur INTO @tblname, @colname, @maxval
+   IF @@fetch_status <> 0 
+      BREAK
+
+   SELECT @sql = 'SELECT @maxval = MAX(' + @colname + ') FROM ' + @tblname
+   PRINT @sql
+   EXEC sp_executesql @sql, N'@maxval bigint OUTPUT', @maxkey OUTPUT
+
+   IF @maxkey > @threshold * @maxval
+      SELECT @tblname, @colname, @maxkey
+END
+
+     
+Index usage (sys.dm_db_index_usage_stats)
+
+Simple version. Use sp_IndexAnalysis scripts for holistic view
+
+
+SELECT 
+    t.object_id
+    ,i.index_id
+    ,s.name + '.' + t.name AS [Table]
+    ,i.name AS [Index] 
+    ,i.type_desc
+    ,i.has_filter AS [Filtered]
+    ,i.is_unique AS [Unique]
+    ,p.rows AS [Rows]
+    ,ius.user_seeks AS [Seeks]
+    ,ius.user_scans AS [Scans]
+    ,ius.user_lookups AS [Lookups]
+    ,ius.user_seeks + ius.user_scans + ius.user_lookups AS [Reads]
+    ,ius.user_updates AS [Updates]
+    ,ius.last_user_seek AS [Last Seek]
+    ,ius.last_user_scan AS [Last Scan]
+    ,ius.last_user_lookup AS [Last Lookup]
+    ,ius.last_user_update AS [Last Update]
+FROM 
+    sys.tables t WITH (NOLOCK) 
+        JOIN sys.indexes i WITH (NOLOCK) ON
+            t.object_id = i.object_id
+        JOIN sys.schemas s WITH (NOLOCK) ON 
+            t.schema_id = s.schema_id
+        CROSS APPLY
+        (
+            SELECT SUM(p.rows) AS [rows]
+            FROM sys.partitions p WITH (NOLOCK) 
+            WHERE 
+                i.object_id = p.object_id AND
+                i.index_id = p.index_id
+        ) p
+        LEFT OUTER JOIN sys.dm_db_index_usage_stats ius ON
+            ius.database_id = DB_ID() AND
+            ius.object_id = i.object_id AND
+            ius.index_id = i.index_id
+WHERE
+    t.is_memory_optimized = 0 AND -- SQL Server 2014+
+    i.is_disabled = 0 AND 
+    i.is_hypothetical = 0 AND
+    t.is_ms_shipped = 0
+ORDER BY
+    s.name, t.name, i.index_id
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Index usage based on plan cache data
+
+May take some time to execute in the systems with large number of plans cached.
+
+Set proper index name in the script
+
+
+DECLARE
+    @IndexName SYSNAME = QUOTENAME('');
+
+;WITH XMLNAMESPACES
+(DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')  
+,CachedData
+AS
+(
+    SELECT DISTINCT
+        obj.value('@Database','SYSNAME') AS [Database]
+        ,obj.value('@Schema','SYSNAME') + '.' + obj.value('@Table','SYSNAME') 
+            AS [Table]
+        ,obj.value('@Index','SYSNAME') AS [Index]
+        ,obj.value('@IndexKind','VARCHAR(64)') AS [Type]
+        ,stmt.value('@StatementText', 'NVARCHAR(MAX)') AS [Statement]
+        ,CONVERT(NVARCHAR(MAX),qp.query_plan) AS query_plan
+        ,cp.plan_handle
+    FROM
+        sys.dm_exec_cached_plans cp WITH (NOLOCK) 
+            CROSS APPLY sys.dm_exec_query_plan(plan_handle) qp
+            CROSS APPLY query_plan.nodes
+             ('/ShowPlanXML/BatchSequence/Batch/Statements/StmtSimple') batch(stmt)
+            CROSS APPLY stmt.nodes
+             ('.//IndexScan/Object[@Index=sql:variable("@IndexName")]') idx(obj)
+)
+SELECT
+    cd.[Database]
+    ,cd.[Table]
+    ,cd.[Index]
+    ,cd.[Type]
+    ,cd.[Statement]
+    ,CONVERT(XML,cd.query_plan) AS query_plan
+    ,qs.execution_count
+    ,(qs.total_logical_reads + qs.total_logical_writes) / qs.execution_count 
+        AS [Avg IO]
+    ,qs.total_logical_reads
+    ,qs.total_logical_writes
+    ,qs.total_worker_time
+    ,qs.total_worker_time / qs.execution_count / 1000 AS [Avg Worker Time (ms)]
+    ,qs.total_rows
+    ,qs.creation_time
+    ,qs.last_execution_time
+FROM 
+    CachedData cd
+        OUTER APPLY
+         (
+            SELECT 
+                SUM(qs.execution_count) AS execution_count
+                ,SUM(qs.total_logical_reads) AS total_logical_reads 
+                ,SUM(qs.total_logical_writes) AS total_logical_writes
+                ,SUM(qs.total_worker_time) AS total_worker_time
+                ,SUM(qs.total_rows) AS total_rows
+                ,MIN(qs.creation_time) AS creation_time 
+                ,MAX(qs.last_execution_time) AS last_execution_time
+            FROM sys.dm_exec_query_stats qs WITH (NOLOCK)
+            WHERE qs.plan_handle = cd.plan_handle
+        ) qs
+OPTION (RECOMPILE, MAXDOP 1);
+     
+Index Operational Statistics (sys.dm_db_index_operational_stats)
+
+Simple version. Use sp_IndexAnalysis scripts for holistic view
+
+
+SELECT 
+	t.object_id
+	,i.index_id
+	,s.name + '.' + t.name AS [Table]
+	,i.name AS [Index] 
+	,i.type_desc
+	,i.has_filter AS [Filtered]
+	,i.is_unique AS [Unique]
+	,p.rows AS [Rows]
+	,ous.*
+FROM 
+	sys.tables t WITH (NOLOCK) 
+		JOIN sys.indexes i WITH (NOLOCK) ON
+			t.object_id = i.object_id
+		JOIN sys.schemas s WITH (NOLOCK) ON 
+			t.schema_id = s.schema_id
+		CROSS APPLY
+		(
+			SELECT SUM(p.rows) AS [rows]
+			FROM sys.partitions p WITH (NOLOCK) 
+			WHERE 
+				i.object_id = p.object_id AND
+				i.index_id = p.index_id
+		) p
+		OUTER APPLY sys.dm_db_index_operational_stats
+			(DB_ID(),i.object_id,i.index_id,NULL) ous
+WHERE
+    t.is_memory_optimized = 0 AND -- SQL Server 2014+
+	i.is_disabled = 0 AND 
+	i.is_hypothetical = 0 AND
+	t.is_ms_shipped = 0
+ORDER BY
+	s.name, t.name, i.index_id
+OPTION (RECOMPILE, MAXDOP 1);
+     
+
+*/
