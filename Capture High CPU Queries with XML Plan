@@ -1,0 +1,90 @@
+-- Create a temporary table to store high CPU queries
+IF OBJECT_ID('tempdb..#HighCPUQueries') IS NOT NULL
+    DROP TABLE #HighCPUQueries;
+
+CREATE TABLE #HighCPUQueries
+(
+    QueryText NVARCHAR(MAX),
+    ExecutionCount INT,
+    TotalCPUTimeMs BIGINT,
+    AvgCPUTimeMs BIGINT,
+    TotalElapsedTimeMs BIGINT,
+    AvgElapsedTimeMs BIGINT,
+    TotalLogicalReads BIGINT,
+    AvgLogicalReads BIGINT,
+    TotalLogicalWrites BIGINT,
+    AvgLogicalWrites BIGINT,
+    DatabaseName NVARCHAR(128),
+    HostName NVARCHAR(128),
+    PlanHandle VARBINARY(MAX),
+    QueryPlan XML,
+    MissingIndexDetails NVARCHAR(MAX) -- To store missing index information
+);
+
+-- Capture high CPU queries
+INSERT INTO #HighCPUQueries
+SELECT
+    SUBSTRING(qt.text, (qs.statement_start_offset / 2) + 1,
+        ((CASE qs.statement_end_offset
+            WHEN -1 THEN DATALENGTH(qt.text)
+            ELSE qs.statement_end_offset END
+        - qs.statement_start_offset) / 2) + 1) AS QueryText,
+    qs.execution_count AS ExecutionCount,
+    qs.total_worker_time / 1000 AS TotalCPUTimeMs,
+    (qs.total_worker_time / qs.execution_count) / 1000 AS AvgCPUTimeMs,
+    qs.total_elapsed_time / 1000 AS TotalElapsedTimeMs,
+    (qs.total_elapsed_time / qs.execution_count) / 1000 AS AvgElapsedTimeMs,
+    qs.total_logical_reads AS TotalLogicalReads,
+    qs.total_logical_reads / qs.execution_count AS AvgLogicalReads,
+    qs.total_logical_writes AS TotalLogicalWrites,
+    qs.total_logical_writes / qs.execution_count AS AvgLogicalWrites,
+    DB_NAME(qp.dbid) AS DatabaseName,
+    s.host_name AS HostName,
+    qs.plan_handle AS PlanHandle,
+    qp.query_plan AS QueryPlan,
+    ISNULL(STUFF(
+        (SELECT CHAR(13) + 'CREATE INDEX [IX_' + OBJECT_NAME(mid.object_id, mid.database_id) + '_Suggested] ON '
+            + OBJECT_NAME(mid.object_id, mid.database_id) + '(' + ISNULL(mid.equality_columns, '') 
+            + CASE WHEN mid.inequality_columns IS NOT NULL THEN ',' + mid.inequality_columns ELSE '' END + ')'
+            + ISNULL(' INCLUDE (' + mid.included_columns + ')', '')
+         FROM sys.dm_db_missing_index_details mid
+         JOIN sys.dm_db_missing_index_groups mig ON mid.index_handle = mig.index_handle
+         JOIN sys.dm_db_missing_index_group_stats migs ON mig.index_group_handle = migs.group_handle
+         WHERE mid.database_id = qp.dbid
+         FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 0, ''), 'No missing index found') AS MissingIndexDetails
+FROM
+    sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) qt
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+LEFT JOIN sys.dm_exec_requests r ON qs.sql_handle = r.sql_handle
+LEFT JOIN sys.dm_exec_sessions s ON r.session_id = s.session_id
+WHERE
+    qs.total_worker_time > 10000000 -- Filter for high CPU queries (e.g., > 10 seconds of total CPU time)
+    -- Uncomment the following line to filter by a specific database name
+    -- AND DB_NAME(qp.dbid) = 'YourDatabaseName'
+    -- Uncomment the following line to filter by a specific host name
+    -- AND s.host_name = 'YourHostName'
+ORDER BY
+    AvgCPUTimeMs DESC;
+
+-- Select the captured queries along with the XML query plan and missing index details
+SELECT
+    QueryText AS [SQL Text],
+    ExecutionCount AS [Execution Count],
+    TotalCPUTimeMs AS [Total CPU Time (ms)],
+    AvgCPUTimeMs AS [Avg CPU Time (ms)],
+    TotalElapsedTimeMs AS [Total Elapsed Time (ms)],
+    AvgElapsedTimeMs AS [Avg Elapsed Time (ms)],
+    TotalLogicalReads AS [Total Logical Reads],
+    AvgLogicalReads AS [Avg Logical Reads],
+    TotalLogicalWrites AS [Total Logical Writes],
+    AvgLogicalWrites AS [Avg Logical Writes],
+    DatabaseName AS [Database Name],
+    HostName AS [Host Name],
+    TRY_CONVERT(XML, QueryPlan) AS [Query Plan], -- Clickable XML Plan
+    MissingIndexDetails AS [Missing Index Recommendations]
+FROM
+    #HighCPUQueries;
+
+-- Clean up temporary table
+DROP TABLE #HighCPUQueries;
