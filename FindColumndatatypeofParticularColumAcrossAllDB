@@ -1,0 +1,30 @@
+DECLARE @SQL NVARCHAR(MAX);
+SET @SQL = '';
+
+-- Generate dynamic SQL to iterate over all user databases
+SELECT @SQL += 
+'USE [' + name + '];
+IF EXISTS (
+    SELECT 1 
+    FROM sys.tables t
+    INNER JOIN sys.columns c ON t.object_id = c.object_id
+    WHERE t.name = ''TRDDTL'' AND c.name = ''TRADE_FULL_DATE''
+)
+BEGIN
+    SELECT 
+        DB_NAME() AS DatabaseName,
+        t.name AS TableName,
+        c.name AS ColumnName,
+        TYPE_NAME(c.user_type_id) AS DataType,
+        c.max_length AS MaxLength,
+        c.is_nullable AS IsNullable
+    FROM sys.tables t
+    INNER JOIN sys.columns c ON t.object_id = c.object_id
+    WHERE t.name = ''TBLNAME'' AND c.name = ''COLUMNNAME'';
+END
+' 
+FROM sys.databases 
+WHERE state_desc = 'ONLINE' AND database_id > 4; -- Exclude system databases
+
+-- Execute the generated SQL script
+EXEC sp_executesql @SQL;
