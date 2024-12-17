@@ -1,0 +1,33 @@
+DECLARE @SQL NVARCHAR(MAX);
+DECLARE @AccessibleDatabases TABLE (DatabaseName NVARCHAR(128));
+DECLARE @AllDatabases TABLE (DatabaseName NVARCHAR(128));
+
+-- Step 1: Populate all user databases
+INSERT INTO @AllDatabases (DatabaseName)
+SELECT name 
+FROM sys.databases
+WHERE state_desc = 'ONLINE';
+
+-- Step 2: Use dynamic SQL to check access for each database
+SET @SQL = '';
+
+SELECT @SQL += 
+'BEGIN TRY
+    USE [' + name + '];
+    INSERT INTO @AccessibleDatabases (DatabaseName)
+    SELECT DB_NAME();
+END TRY
+BEGIN CATCH
+    -- Do nothing if access is denied
+END CATCH; '
+FROM sys.databases
+WHERE state_desc = 'ONLINE';
+
+EXEC sp_executesql @SQL;
+
+-- Step 3: List databases the current login does NOT have access to
+SELECT a.DatabaseName AS InaccessibleDatabase
+FROM @AllDatabases a
+LEFT JOIN @AccessibleDatabases ad
+ON a.DatabaseName = ad.DatabaseName
+WHERE ad.DatabaseName IS NULL;
