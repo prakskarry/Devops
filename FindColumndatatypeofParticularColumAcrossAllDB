@@ -1,3 +1,16 @@
+-- Step 1: Create a central table to store results
+IF OBJECT_ID('tempdb..#ColumnDataTypeResults') IS NOT NULL
+    DROP TABLE #ColumnDataTypeResults;
+
+CREATE TABLE #ColumnDataTypeResults (
+    DatabaseName NVARCHAR(128),
+    TableName NVARCHAR(128),
+    ColumnName NVARCHAR(128),
+    DataType NVARCHAR(128),
+    MaxLength INT,
+    IsNullable BIT
+);
+
 DECLARE @SQL NVARCHAR(MAX);
 SET @SQL = '';
 
@@ -11,7 +24,8 @@ IF EXISTS (
     WHERE t.name = ''TBLNAME'' AND c.name = ''COLUNMNAME''
 )
 BEGIN
-    SELECT 
+    INSERT INTO #ColumnDataTypeResults (DatabaseName, TableName, ColumnName, DataType, MaxLength, IsNullable)
+    SELECT  
         DB_NAME() AS DatabaseName,
         t.name AS TableName,
         c.name AS ColumnName,
@@ -28,3 +42,10 @@ WHERE state_desc = 'ONLINE' AND database_id > 4; -- Exclude system databases
 
 -- Execute the generated SQL script
 EXEC sp_executesql @SQL;
+
+
+-- : Display the results
+SELECT * FROM #ColumnDataTypeResults;
+
+-- Optional: Clean up
+DROP TABLE #ColumnDataTypeResults;
