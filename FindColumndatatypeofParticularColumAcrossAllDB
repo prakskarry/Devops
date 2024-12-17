@@ -8,7 +8,7 @@ IF EXISTS (
     SELECT 1 
     FROM sys.tables t
     INNER JOIN sys.columns c ON t.object_id = c.object_id
-    WHERE t.name = ''TRDDTL'' AND c.name = ''TRADE_FULL_DATE''
+    WHERE t.name = ''TBLNAME'' AND c.name = ''COLUNMNAME''
 )
 BEGIN
     SELECT 
