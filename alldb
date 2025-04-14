@@ -1,0 +1,71 @@
+DECLARE @dbName NVARCHAR(200)
+DECLARE @tableName NVARCHAR(200)
+DECLARE @schemaName NVARCHAR(200)
+DECLARE @sqlCommand NVARCHAR(MAX)
+DECLARE @finalSQL NVARCHAR(MAX) = ''
+
+-- Cursor to loop through all databases starting with 'abcd_'
+DECLARE db_cursor CURSOR FOR
+SELECT name 
+FROM sys.databases 
+WHERE name LIKE 'abcd_%'
+  AND state_desc = 'ONLINE'
+
+OPEN db_cursor
+FETCH NEXT FROM db_cursor INTO @dbName
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Dynamic SQL to find all matching tables in the current database
+    SET @sqlCommand = '
+    SELECT ''' + @dbName + ''' AS dbname, TABLE_SCHEMA, TABLE_NAME
+    FROM [' + @dbName + '].INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_NAME LIKE ''dfgh%[_]map%'' AND TABLE_TYPE = ''BASE TABLE'''
+    
+    -- Temporary table to store matching tables
+    IF OBJECT_ID('tempdb..#TableList') IS NOT NULL DROP TABLE #TableList
+    CREATE TABLE #TableList (
+        dbname NVARCHAR(200),
+        TABLE_SCHEMA NVARCHAR(200),
+        TABLE_NAME NVARCHAR(200)
+    )
+
+    INSERT INTO #TableList
+    EXEC (@sqlCommand)
+
+    -- Cursor to loop through tables in the current database
+    DECLARE tbl_cursor CURSOR FOR
+    SELECT TABLE_SCHEMA, TABLE_NAME FROM #TableList
+
+    FETCH NEXT FROM tbl_cursor INTO @schemaName, @tableName
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Build SELECT statement for each matching table
+        SET @finalSQL += '
+        IF EXISTS (
+            SELECT 1 FROM [' + @dbName + '].[' + @schemaName + '].[' + @tableName + '] 
+            WHERE abc_fld LIKE ''%duskaNote%''
+        )
+        BEGIN
+            PRINT ''Fetching from [' + @dbName + '].[' + @schemaName + '].[' + @tableName + ']'';
+            SELECT ''' + @dbName + ''' AS DatabaseName, * 
+            FROM [' + @dbName + '].[' + @schemaName + '].[' + @tableName + ']
+            WHERE abc_fld LIKE ''%duskaNote%''
+            ORDER BY abc_fld ASC;
+        END
+        '
+        FETCH NEXT FROM tbl_cursor INTO @schemaName, @tableName
+    END
+
+    CLOSE tbl_cursor
+    DEALLOCATE tbl_cursor
+
+    FETCH NEXT FROM db_cursor INTO @dbName
+END
+
+CLOSE db_cursor
+DEALLOCATE db_cursor
+
+-- Execute the dynamic SQL
+EXEC sp_executesql @finalSQL
