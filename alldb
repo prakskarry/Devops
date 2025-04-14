@@ -3,24 +3,23 @@ DECLARE @command NVARCHAR(MAX)
 SET @command = '
 IF ''?'' LIKE ''bbdb_%''
 BEGIN
-    DECLARE @inner_sql NVARCHAR(MAX) = ''''
+    DECLARE @sql NVARCHAR(MAX) = ''''
 
-    SELECT @inner_sql = STRING_AGG(
-        ''IF EXISTS (SELECT 1 FROM [?].["'' + s.name + ''"].["'' + t.name + ''"] WHERE src_fld LIKE ''''%ShortNote%%%%'''')
-        BEGIN
-            PRINT ''''Querying [?].["'' + s.name + ''"].["'' + t.name + ''"]'''';
-            SELECT ''''?'''' AS DatabaseName, * 
-            FROM [?].["'' + s.name + ''"].["'' + t.name + ''"]
-            WHERE src_fld LIKE ''''%ShortNote%%%%''''
-            ORDER BY src_fld ASC;
-        END'', 
-        CHAR(13) + CHAR(10)
-    )
+    SELECT @sql = @sql + 
+    ''IF EXISTS (SELECT 1 FROM [?].['' + s.name + ''].['' + t.name + ''] WHERE src_fld LIKE ''''%ShortNote%%%%'''')
+    BEGIN
+        PRINT ''''Querying [?].['' + s.name + ''].['' + t.name + '']'''';
+        SELECT ''''?'''' AS DatabaseName, * 
+        FROM [?].['' + s.name + ''].['' + t.name + '']
+        WHERE src_fld LIKE ''''%ShortNote%%%%''''
+        ORDER BY src_fld ASC;
+    END
+    ''
     FROM [?].sys.tables t
     JOIN [?].sys.schemas s ON t.schema_id = s.schema_id
-    WHERE t.name LIKE ''bbmq%[_]map%''
+    WHERE t.name LIKE ''bbmq%[_]map%'' ESCAPE ''[''
 
-    EXEC(@inner_sql)
+    EXEC(@sql)
 END
 '
 
