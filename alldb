@@ -1,92 +1,55 @@
- ''''['' + s.name + ''].['' + t.name + '']'''' AS TableName,
+Absolutely! Here's the Jira ticket in the same structured format as earlier, with **Problem**, **Objective**, and **Action Plan**:
 
-1. Legacy Database Cleanup
-Objective: Decommission unused or obsolete databases to reduce storage overhead and improve performance.
+---
 
-Action Plan:
+### **Title**: Monitor Disk Space Usage and Index Fragmentation on Dev SQL Server
 
-Inventory all user databases on the dev server via sys.databases.
+---
 
-Capture last access time using Extended Events, default trace, or DMVs like sys.dm_exec_sessions and sys.dm_exec_requests.
+### **Problem**
 
-Prepare a list of databases with no activity for over 90 days.
+1. SQL Server storage volumes (DATA, LOG, TEMPDB, BACKUPS) are not actively monitored for space utilization, leading to unplanned outages and reactive interventions.
+2. Index fragmentation grows unchecked over time, degrading query performance and causing excessive I/O.
+3. Lack of historical tracking for fragmentation and disk space trends prevents data-driven tuning and capacity planning.
 
-Engage dev teams to validate business usage; log confirmations.
+---
 
-Backup (full) each unused database and store in cold/archive tier.
+### **Objective**
 
-Drop or detach obsolete databases after sign-off and audit trail.
+Implement an automated monitoring solution to:
 
-Update CMDB and documentation post-deletion.
+* Track disk space usage on all SQL Server–attached volumes.
+* Monitor index fragmentation levels across user databases.
+* Provide proactive alerts and generate actionable performance maintenance reports.
 
-2. Data Archival Strategy for Transactional Tables
-Objective: Implement partitioned archiving or historical data offloading to enhance query performance and maintain data hygiene.
+---
 
-Action Plan:
+### **Action Plan**
 
-Identify high-churn transactional tables using sys.dm_db_index_usage_stats and row count deltas over time.
+#### **Disk Space Monitoring**
 
-Define archival criteria (e.g., records older than 6 months).
+* Query mounted volumes using `sys.dm_os_volume_stats`, `xp_fixeddrives`, or PowerShell `Get-PSDrive` and `Get-Volume`.
+* Build a SQL Agent Job or scheduled PowerShell script to log disk usage daily into a custom table: `dbo.DiskSpaceAudit`.
+* Define disk space thresholds (e.g., alert at <20% free).
+* Use Database Mail to send alerts to DBAs and IT Ops when thresholds are breached.
+* (Optional) Integrate with monitoring solutions such as SCOM, Grafana, Zabbix, or Prometheus exporters.
 
-Create staging archive tables with matching schema in a separate archival database or filegroup.
+#### **Index Fragmentation Monitoring**
 
-Use INSERT INTO archive_table SELECT ... with batch processing (e.g., 10K rows per batch with WAITFOR DELAY) to avoid blocking.
+* Run a weekly scan using `sys.dm_db_index_physical_stats` for all online user databases.
+* Log results to a new table: `dbo.IndexFragmentationStats`.
+* Define fragmentation thresholds:
 
-Implement Table Partitioning and use SWITCH for seamless data movement, if supported.
+  * 10–30% → Recommend Reorganize
+  * > 30% → Recommend Rebuild
+* Generate and store a maintenance recommendation report.
+* Schedule a lightweight summary email to DBAs with actionable insights.
 
-Schedule archival via SQL Agent Job or Azure Data Factory (if hybrid).
+#### **Historical Trend Tracking**
 
-Validate referential integrity and implement soft deletes or triggers if needed.
+* Implement rolling data retention (e.g., keep 30 days of disk stats, 90 days of fragmentation data).
+* Develop lightweight Power BI or SSRS dashboards (optional) to visualize trends in disk growth and index health.
 
-3. Transaction Log Backup and Regular Shrinking
-Objective: Prevent transaction log bloating and maintain log file health.
+---
 
-Action Plan:
-
-Ensure database recovery model is set to FULL for all mission-critical databases.
-
-Implement transaction log backups every 15 minutes using SQL Agent or Ola Hallengren’s MaintenanceSolution.
-
-Monitor log space usage using DBCC SQLPERF(logspace).
-
-Identify VLF fragmentation using DBCC LOGINFO.
-
-Automate log file shrinking only post-backup and only for bloated logs, avoiding frequent shrink operations (DBCC SHRINKFILE with target size).
-
-Document backup retention and offload policies.
-
-4. Index Maintenance Plan
-Objective: Optimize index structure for performance tuning and statistics accuracy.
-
-Action Plan:
-
-Use scripts like Ola Hallengren's IndexOptimize or customized PowerShell routines.
-
-Identify fragmented indexes using sys.dm_db_index_physical_stats (FRAGMENTATION > 30%).
-
-Rebuild indexes with ONLINE = ON (Enterprise Edition) or Reorganize for mid-level fragmentation.
-
-Update statistics with full scan (UPDATE STATISTICS WITH FULLSCAN) weekly or post-index ops.
-
-Schedule during off-peak hours via SQL Agent Jobs.
-
-Track index usage with sys.dm_db_index_usage_stats and drop unused indexes after analysis.
-
-Implement reporting on index maintenance history and fragmentation trends.
-
-5. Add New Disk for Log Backups
-Objective: Isolate transaction log backups on a dedicated volume to improve IO throughput and backup management.
-
-Action Plan:
-
-Provision new disk (e.g., E:\ or L:) with NTFS and 64K allocation unit size.
-
-Update SQL Server backup jobs to point to the new path (e.g., E:\SQLBackups\Logs\).
-
-Verify SQL Server service account permissions on new volume.
-
-Update backup retention policies to purge older files (e.g., 14 days) using PowerShell scripts or Maintenance Plans.
-
-Monitor disk IO via PerfMon counters: PhysicalDisk: Avg. Disk sec/Write.
-
-Tag volume in monitoring tools for alerts on space thresholds (<20%).
+Let me know if you want the monitoring scripts for disk usage and fragmentation added to this ticket.
