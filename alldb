@@ -1,1 +1,92 @@
  ''''['' + s.name + ''].['' + t.name + '']'''' AS TableName,
+
+1. Legacy Database Cleanup
+Objective: Decommission unused or obsolete databases to reduce storage overhead and improve performance.
+
+Action Plan:
+
+Inventory all user databases on the dev server via sys.databases.
+
+Capture last access time using Extended Events, default trace, or DMVs like sys.dm_exec_sessions and sys.dm_exec_requests.
+
+Prepare a list of databases with no activity for over 90 days.
+
+Engage dev teams to validate business usage; log confirmations.
+
+Backup (full) each unused database and store in cold/archive tier.
+
+Drop or detach obsolete databases after sign-off and audit trail.
+
+Update CMDB and documentation post-deletion.
+
+2. Data Archival Strategy for Transactional Tables
+Objective: Implement partitioned archiving or historical data offloading to enhance query performance and maintain data hygiene.
+
+Action Plan:
+
+Identify high-churn transactional tables using sys.dm_db_index_usage_stats and row count deltas over time.
+
+Define archival criteria (e.g., records older than 6 months).
+
+Create staging archive tables with matching schema in a separate archival database or filegroup.
+
+Use INSERT INTO archive_table SELECT ... with batch processing (e.g., 10K rows per batch with WAITFOR DELAY) to avoid blocking.
+
+Implement Table Partitioning and use SWITCH for seamless data movement, if supported.
+
+Schedule archival via SQL Agent Job or Azure Data Factory (if hybrid).
+
+Validate referential integrity and implement soft deletes or triggers if needed.
+
+3. Transaction Log Backup and Regular Shrinking
+Objective: Prevent transaction log bloating and maintain log file health.
+
+Action Plan:
+
+Ensure database recovery model is set to FULL for all mission-critical databases.
+
+Implement transaction log backups every 15 minutes using SQL Agent or Ola Hallengren’s MaintenanceSolution.
+
+Monitor log space usage using DBCC SQLPERF(logspace).
+
+Identify VLF fragmentation using DBCC LOGINFO.
+
+Automate log file shrinking only post-backup and only for bloated logs, avoiding frequent shrink operations (DBCC SHRINKFILE with target size).
+
+Document backup retention and offload policies.
+
+4. Index Maintenance Plan
+Objective: Optimize index structure for performance tuning and statistics accuracy.
+
+Action Plan:
+
+Use scripts like Ola Hallengren's IndexOptimize or customized PowerShell routines.
+
+Identify fragmented indexes using sys.dm_db_index_physical_stats (FRAGMENTATION > 30%).
+
+Rebuild indexes with ONLINE = ON (Enterprise Edition) or Reorganize for mid-level fragmentation.
+
+Update statistics with full scan (UPDATE STATISTICS WITH FULLSCAN) weekly or post-index ops.
+
+Schedule during off-peak hours via SQL Agent Jobs.
+
+Track index usage with sys.dm_db_index_usage_stats and drop unused indexes after analysis.
+
+Implement reporting on index maintenance history and fragmentation trends.
+
+5. Add New Disk for Log Backups
+Objective: Isolate transaction log backups on a dedicated volume to improve IO throughput and backup management.
+
+Action Plan:
+
+Provision new disk (e.g., E:\ or L:) with NTFS and 64K allocation unit size.
+
+Update SQL Server backup jobs to point to the new path (e.g., E:\SQLBackups\Logs\).
+
+Verify SQL Server service account permissions on new volume.
+
+Update backup retention policies to purge older files (e.g., 14 days) using PowerShell scripts or Maintenance Plans.
+
+Monitor disk IO via PerfMon counters: PhysicalDisk: Avg. Disk sec/Write.
+
+Tag volume in monitoring tools for alerts on space thresholds (<20%).
