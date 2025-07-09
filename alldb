@@ -1,55 +1,87 @@
-Absolutely! Here's the Jira ticket in the same structured format as earlier, with **Problem**, **Objective**, and **Action Plan**:
+Hi Team,
 
----
+As part of our ongoing efforts to improve the governance and maintainability of database objects (stored procedures, triggers, views, etc.), we are evaluating tools and processes for versioning and change tracking, especially for changes made through SSMS and DBeaver.
 
-### **Title**: Monitor Disk Space Usage and Index Fragmentation on Dev SQL Server
+Before further researching an approach, I’d appreciate your input to help us understand:
 
----
+ - Current workflows and challenges
 
-### **Problem**
+- Expectations around Git/Bitbucket integration
 
-1. SQL Server storage volumes (DATA, LOG, TEMPDB, BACKUPS) are not actively monitored for space utilization, leading to unplanned outages and reactive interventions.
-2. Index fragmentation grows unchecked over time, degrading query performance and causing excessive I/O.
-3. Lack of historical tracking for fragmentation and disk space trends prevents data-driven tuning and capacity planning.
+- Any constraints around tools, automation, and budget
 
----
+Please take a few minutes to review and respond to the following.
 
-### **Objective**
+What types of DB objects do you typically modify? (e.g., SPs, triggers, views)
+How frequently do these changes occur? (Ad-Hoc/Daily/Weekly/Monthly)
+What is the purpose of version control? (Tracking, rollback, compliance, CI/CD, etc.)
 
-Implement an automated monitoring solution to:
+Who in your team usually modifies these DB objects? (Dev, BA, DBA, etc.)
 
-* Track disk space usage on all SQL Server–attached volumes.
-* Monitor index fragmentation levels across user databases.
-* Provide proactive alerts and generate actionable performance maintenance reports.
+🔹 Section 2: Workflow & Practices
+How are changes made today? (Directly in SSMS or DBeaver, or through .sql files?)
 
----
+Are changes stored in Bitbucket or any Git repo currently?
 
-### **Action Plan**
+Are shared SQL logins used? If yes, how do you identify who made the change?
 
-#### **Disk Space Monitoring**
+Should SSMS/DBeaver changes be automatically detected and versioned?
 
-* Query mounted volumes using `sys.dm_os_volume_stats`, `xp_fixeddrives`, or PowerShell `Get-PSDrive` and `Get-Volume`.
-* Build a SQL Agent Job or scheduled PowerShell script to log disk usage daily into a custom table: `dbo.DiskSpaceAudit`.
-* Define disk space thresholds (e.g., alert at <20% free).
-* Use Database Mail to send alerts to DBAs and IT Ops when thresholds are breached.
-* (Optional) Integrate with monitoring solutions such as SCOM, Grafana, Zabbix, or Prometheus exporters.
+🔹 Section 3: Git Integration
+Which Git platform are you using? (Bitbucket, GitHub, etc.)
 
-#### **Index Fragmentation Monitoring**
+How comfortable is the team with Git commands or using Git GUIs?
 
-* Run a weekly scan using `sys.dm_db_index_physical_stats` for all online user databases.
-* Log results to a new table: `dbo.IndexFragmentationStats`.
-* Define fragmentation thresholds:
+Would you prefer automated Git commits or manual approval before commit?
 
-  * 10–30% → Recommend Reorganize
-  * > 30% → Recommend Rebuild
-* Generate and store a maintenance recommendation report.
-* Schedule a lightweight summary email to DBAs with actionable insights.
+Is rollback capability needed? If yes, for all or only some environments?
 
-#### **Historical Trend Tracking**
+Is CI/CD integration expected now or in the near future?
 
-* Implement rolling data retention (e.g., keep 30 days of disk stats, 90 days of fragmentation data).
-* Develop lightweight Power BI or SSRS dashboards (optional) to visualize trends in disk growth and index health.
+🔹 Section 4: Audit & Change Tracking
+Should we track who made changes (especially with shared logins)?
 
----
+Should all changes (even if not committed to Git) be logged?
 
-Let me know if you want the monitoring scripts for disk usage and fragmentation added to this ticket.
+Do you want notifications (Email/Slack) when changes are made?
+
+💰 Section 5: Budget & Licensing
+Is there a budget allocated for tools (e.g., Redgate, ApexSQL)?
+
+Preferred pricing model? (Per-user / Subscription / Free/Open-source)
+
+Approximate number of users requiring access?
+
+Any vendor restrictions or procurement guidelines?
+
+Are you open to a script-based solution if setup is handled internally?
+
+🧩 Section 6: Tool Compatibility (SSMS, DBeaver, Others)
+Are any team members using tools other than SSMS (e.g., DBeaver, Azure Data Studio)?
+
+If yes, please specify which tool(s): ___________
+
+Should the versioning solution work across both SSMS and non-Microsoft tools (like DBeaver)?
+
+ Yes – tool must be cross-platform
+
+ No – SSMS-only is acceptable
+
+Are DBeaver users comfortable manually saving and pushing SQL object scripts to Git?
+
+ Yes
+
+ No
+
+ Only if clear documentation is provided
+
+🧭 Optional: Describe Your Ideal Workflow
+If possible, describe how you'd like this to work.
+Example:
+
+“When someone alters a stored procedure in SSMS or DBeaver, it should auto-detect the change, script it out, and push the .sql file to Bitbucket with username and timestamp. Rollback support is preferred.”
+
+Your answer:
+
+Your input will help us choose the most effective and compatible solution — whether a GUI-based tool (Redgate/ApexSQL), cross-platform open-source solution (Flyway/Liquibase), or an internally automated DDL-trigger-based approach.
+
