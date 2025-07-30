@@ -1,0 +1,129 @@
+SET NOCOUNT ON;
+
+-- 1. Basic Server Properties
+PRINT '=== Server Properties ===';
+SELECT 
+    SERVERPROPERTY('MachineName') AS MachineName,
+    SERVERPROPERTY('ServerName') AS ServerName,
+    SERVERPROPERTY('InstanceName') AS InstanceName,
+    SERVERPROPERTY('IsClustered') AS IsClustered,
+    SERVERPROPERTY('Edition') AS Edition,
+    SERVERPROPERTY('ProductVersion') AS ProductVersion,
+    SERVERPROPERTY('ProductLevel') AS ProductLevel,
+    SERVERPROPERTY('EngineEdition') AS EngineEdition,
+    SERVERPROPERTY('Collation') AS Collation,
+    SERVERPROPERTY('IsIntegratedSecurityOnly') AS IsIntegratedSecurityOnly;
+
+-- 2. sp_configure Settings (All)
+PRINT '=== sp_configure Settings ===';
+EXEC sp_configure;
+
+-- 3. Important Configuration Settings
+PRINT '=== Key Configuration Settings ===';
+SELECT 
+    name, 
+    value_in_use 
+FROM sys.configurations 
+WHERE name IN (
+    'max server memory (MB)', 
+    'min server memory (MB)', 
+    'max degree of parallelism', 
+    'cost threshold for parallelism',
+    'remote admin connections',
+    'backup compression default',
+    'optimize for ad hoc workloads'
+);
+
+-- 4. Active Trace Flags
+PRINT '=== Active Trace Flags ===';
+DBCC TRACESTATUS(-1) WITH NO_INFOMSGS;
+
+-- 5. SQL Server Logins (summary only)
+PRINT '=== Server Logins ===';
+SELECT 
+    name, 
+    type_desc, 
+    is_disabled, 
+    default_database_name,
+    create_date
+FROM sys.server_principals 
+WHERE type IN ('S', 'U') AND name NOT LIKE '##%';
+
+-- 6. Server Role Memberships
+PRINT '=== Server Role Members ===';
+SELECT 
+    r.name AS ServerRole,
+    m.name AS MemberName
+FROM sys.server_role_members rm
+JOIN sys.server_principals r ON rm.role_principal_id = r.principal_id
+JOIN sys.server_principals m ON rm.member_principal_id = m.principal_id;
+
+-- 7. Linked Servers
+PRINT '=== Linked Servers ===';
+SELECT 
+    name, 
+    data_source, 
+    provider_string, 
+    provider, 
+    product, 
+    catalog
+FROM sys.servers
+WHERE is_linked = 1;
+
+-- 8. Startup Parameters (SQLArg0..n from registry)
+PRINT '=== Startup Parameters (partial) ===';
+DECLARE @i INT = 0;
+DECLARE @param NVARCHAR(255);
+WHILE @i <= 5  -- check first 5 startup params
+BEGIN
+    EXEC xp_instance_regread 
+        N'HKEY_LOCAL_MACHINE', 
+        N'SOFTWARE\Microsoft\Microsoft SQL Server\MSSQLServer\Parameters',
+        CONCAT('SQLArg', @i),
+        @param OUTPUT;
+
+    IF @param IS NOT NULL
+        PRINT CONCAT('SQLArg', @i, ': ', @param);
+
+    SET @i += 1;
+END
+
+-- 9. Default File Paths
+PRINT '=== Default File Locations ===';
+DECLARE @reg_value NVARCHAR(4000);
+
+EXEC master.dbo.xp_instance_regread
+    N'HKEY_LOCAL_MACHINE',
+    N'SOFTWARE\Microsoft\MSSQLServer\MSSQLServer',
+    N'DefaultData',
+    @reg_value OUTPUT;
+PRINT 'Default Data Path: ' + ISNULL(@reg_value, 'N/A');
+
+EXEC master.dbo.xp_instance_regread
+    N'HKEY_LOCAL_MACHINE',
+    N'SOFTWARE\Microsoft\MSSQLServer\MSSQLServer',
+    N'DefaultLog',
+    @reg_value OUTPUT;
+PRINT 'Default Log Path: ' + ISNULL(@reg_value, 'N/A');
+
+-- 10. SQL Agent Jobs Summary
+PRINT '=== SQL Server Agent Jobs ===';
+SELECT 
+    name AS JobName,
+    enabled,
+    description,
+    date_created,
+    date_modified
+FROM msdb.dbo.sysjobs;
+
+-- 11. Server-Level Audits (if any)
+PRINT '=== Server Audits (if configured) ===';
+SELECT 
+    name, 
+    create_date, 
+    audit_file_path,
+    is_state_enabled 
+FROM sys.server_audits;
+
+-- End
+PRINT '=== CONFIGURATION EXTRACTION COMPLETE ===';
