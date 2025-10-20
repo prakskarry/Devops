@@ -1,87 +1,17 @@
-Hi Team,
+I would like to summarize the recent events and findings related to the performance issue observed in Database X for proper documentation and future reference.
 
-As part of our ongoing efforts to improve the governance and maintainability of database objects (stored procedures, triggers, views, etc.), we are evaluating tools and processes for versioning and change tracking, especially for changes made through SSMS and DBeaver.
+As discussed earlier, when the performance degradation was initially reported, I had recommended that any index changes—especially replicating all indexes from Database Y—should first be tested in a lower environment. My concern was that, although Database X and Y share the same schema, their data distribution, workload characteristics, and transaction patterns differ. These differences can cause index effectiveness to vary between environments.
 
-Before further researching an approach, I’d appreciate your input to help us understand:
+Despite this, during the joint meeting with the Development and Release teams, it was decided to proceed with creating the same set of indexes in the production environment based on prior experience. The indexes were created accordingly; however, the performance issue persists post-implementation.
 
- - Current workflows and challenges
+Upon reviewing the current workload and query execution patterns, it appears that the newly added indexes have not contributed to query optimization and in some cases may be adding overhead due to increased maintenance during write operations.
 
-- Expectations around Git/Bitbucket integration
+To move forward effectively, I recommend the following:
 
-- Any constraints around tools, automation, and budget
+Rollback or disable non-beneficial indexes after validation through query plan analysis.
 
-Please take a few minutes to review and respond to the following.
+Perform controlled testing in a lower environment before applying any further indexing or structural changes.
 
-What types of DB objects do you typically modify? (e.g., SPs, triggers, views)
-How frequently do these changes occur? (Ad-Hoc/Daily/Weekly/Monthly)
-What is the purpose of version control? (Tracking, rollback, compliance, CI/CD, etc.)
+Conduct a comprehensive performance review focusing on data growth, parameter sniffing, and query tuning opportunities.
 
-Who in your team usually modifies these DB objects? (Dev, BA, DBA, etc.)
-
-🔹 Section 2: Workflow & Practices
-How are changes made today? (Directly in SSMS or DBeaver, or through .sql files?)
-
-Are changes stored in Bitbucket or any Git repo currently?
-
-Are shared SQL logins used? If yes, how do you identify who made the change?
-
-Should SSMS/DBeaver changes be automatically detected and versioned?
-
-🔹 Section 3: Git Integration
-Which Git platform are you using? (Bitbucket, GitHub, etc.)
-
-How comfortable is the team with Git commands or using Git GUIs?
-
-Would you prefer automated Git commits or manual approval before commit?
-
-Is rollback capability needed? If yes, for all or only some environments?
-
-Is CI/CD integration expected now or in the near future?
-
-🔹 Section 4: Audit & Change Tracking
-Should we track who made changes (especially with shared logins)?
-
-Should all changes (even if not committed to Git) be logged?
-
-Do you want notifications (Email/Slack) when changes are made?
-
-💰 Section 5: Budget & Licensing
-Is there a budget allocated for tools (e.g., Redgate, ApexSQL)?
-
-Preferred pricing model? (Per-user / Subscription / Free/Open-source)
-
-Approximate number of users requiring access?
-
-Any vendor restrictions or procurement guidelines?
-
-Are you open to a script-based solution if setup is handled internally?
-
-🧩 Section 6: Tool Compatibility (SSMS, DBeaver, Others)
-Are any team members using tools other than SSMS (e.g., DBeaver, Azure Data Studio)?
-
-If yes, please specify which tool(s): ___________
-
-Should the versioning solution work across both SSMS and non-Microsoft tools (like DBeaver)?
-
- Yes – tool must be cross-platform
-
- No – SSMS-only is acceptable
-
-Are DBeaver users comfortable manually saving and pushing SQL object scripts to Git?
-
- Yes
-
- No
-
- Only if clear documentation is provided
-
-🧭 Optional: Describe Your Ideal Workflow
-If possible, describe how you'd like this to work.
-Example:
-
-“When someone alters a stored procedure in SSMS or DBeaver, it should auto-detect the change, script it out, and push the .sql file to Bitbucket with username and timestamp. Rollback support is preferred.”
-
-Your answer:
-
-Your input will help us choose the most effective and compatible solution — whether a GUI-based tool (Redgate/ApexSQL), cross-platform open-source solution (Flyway/Liquibase), or an internally automated DDL-trigger-based approach.
-
+This note is being shared to maintain transparency on the actions taken and to ensure that future performance optimizations follow a data-driven and tested approach before deployment to production.
