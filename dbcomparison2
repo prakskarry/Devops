@@ -1,0 +1,420 @@
+
+SET NOCOUNT ON;
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+-- Create temp tables to store results
+IF OBJECT_ID('tempdb..#ColumnComparison') IS NOT NULL DROP TABLE #ColumnComparison;
+IF OBJECT_ID('tempdb..#IndexComparison') IS NOT NULL DROP TABLE #IndexComparison;
+IF OBJECT_ID('tempdb..#DiscrepancyReport') IS NOT NULL DROP TABLE #DiscrepancyReport;
+
+CREATE TABLE #ColumnComparison (
+    DatabaseName sysname,
+    TableName sysname,
+    ColumnName sysname,
+    OrdinalPosition int,
+    DataType sysname,
+    MaxLength smallint,
+    Precision tinyint,
+    Scale tinyint,
+    IsNullable bit,
+    IsPrimaryKey bit,
+    ComparisonID uniqueidentifier DEFAULT NEWID()
+);
+
+CREATE TABLE #IndexComparison (
+    DatabaseName sysname,
+    TableName sysname,
+    IndexName sysname,
+    IndexType tinyint,
+    IndexTypeDesc nvarchar(60),
+    IsPrimaryKey bit,
+    IsUnique bit,
+    KeyColumns nvarchar(max),
+    IncludedColumns nvarchar(max),
+    ComparisonID uniqueidentifier DEFAULT NEWID()
+);
+
+CREATE TABLE #DiscrepancyReport (
+    DatabaseName sysname,
+    TableName sysname,
+    ObjectType varchar(20), -- 'COLUMN' or 'INDEX'
+    DiscrepancyType varchar(50),
+    DiscrepancyDetails nvarchar(max),
+    SeverityLevel int -- 1=Critical, 2=Warning, 3=Info
+);
+
+-- Get all online user databases
+DECLARE @DatabaseName sysname;
+DECLARE @SQL nvarchar(max);
+
+DECLARE db_cursor CURSOR FOR
+SELECT name
+FROM sys.databases
+WHERE state_desc = 'ONLINE'
+    AND database_id > 4 -- Exclude system databases (master, model, msdb, tempdb)
+    AND name NOT IN ('distribution') -- Exclude distribution database if exists
+ORDER BY name;
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @DatabaseName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    BEGIN TRY
+        -- Collect column information for the three tables
+        SET @SQL = '
+        USE [' + @DatabaseName + '];
+        
+        INSERT INTO #ColumnComparison (DatabaseName, TableName, ColumnName, OrdinalPosition, 
+                                      DataType, MaxLength, Precision, Scale, IsNullable, IsPrimaryKey)
+        SELECT 
+            DB_NAME() as DatabaseName,
+            OBJECT_NAME(c.object_id) as TableName,
+            c.name as ColumnName,
+            c.column_id as OrdinalPosition,
+            UPPER(tp.name) as DataType,
+            c.max_length as MaxLength,
+            c.precision as Precision,
+            c.scale as Scale,
+            c.is_nullable as IsNullable,
+            CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END as IsPrimaryKey
+        FROM sys.columns c
+        INNER JOIN sys.types tp ON c.user_type_id = tp.user_type_id
+        LEFT JOIN (
+            SELECT ic.object_id, ic.column_id
+            FROM sys.index_columns ic
+            INNER JOIN sys.indexes i ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+            WHERE i.is_primary_key = 1
+        ) pk ON c.object_id = pk.object_id AND c.column_id = pk.column_id
+        WHERE OBJECT_NAME(c.object_id) IN (''MSG_1'', ''MSG_2'', ''Traref'')
+            AND OBJECTPROPERTY(c.object_id, ''IsTable'') = 1
+        ORDER BY TableName, OrdinalPosition;';
+
+        EXEC sp_executesql @SQL;
+
+        -- Collect index information for the three tables
+        SET @SQL = '
+        USE [' + @DatabaseName + '];
+        
+        INSERT INTO #IndexComparison (DatabaseName, TableName, IndexName, IndexType, 
+                                     IndexTypeDesc, IsPrimaryKey, IsUnique, KeyColumns, IncludedColumns)
+        SELECT 
+            DB_NAME() as DatabaseName,
+            OBJECT_NAME(i.object_id) as TableName,
+            i.name as IndexName,
+            i.type as IndexType,
+            i.type_desc as IndexTypeDesc,
+            i.is_primary_key as IsPrimaryKey,
+            i.is_unique as IsUnique,
+            STUFF((
+                SELECT '', '' + c.name + CASE WHEN ic.is_descending_key = 1 THEN '' DESC'' ELSE '' ASC'' END
+                FROM sys.index_columns ic
+                INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE ic.object_id = i.object_id 
+                    AND ic.index_id = i.index_id
+                    AND ic.is_included_column = 0
+                ORDER BY ic.key_ordinal
+                FOR XML PATH('''')
+            ), 1, 2, '''') as KeyColumns,
+            STUFF((
+                SELECT '', '' + c.name
+                FROM sys.index_columns ic
+                INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                WHERE ic.object_id = i.object_id 
+                    AND ic.index_id = i.index_id
+                    AND ic.is_included_column = 1
+                ORDER BY ic.index_column_id
+                FOR XML PATH('''')
+            ), 1, 2, '''') as IncludedColumns
+        FROM sys.indexes i
+        WHERE OBJECT_NAME(i.object_id) IN (''MSG_1'', ''MSG_2'', ''Traref'')
+            AND i.type > 0 -- Exclude heaps (type 0)
+            AND OBJECTPROPERTY(i.object_id, ''IsTable'') = 1
+        ORDER BY TableName, IndexName;';
+
+        EXEC sp_executesql @SQL;
+    END TRY
+    BEGIN CATCH
+        INSERT INTO #DiscrepancyReport (DatabaseName, TableName, ObjectType, DiscrepancyType, DiscrepancyDetails, SeverityLevel)
+        VALUES (@DatabaseName, 'N/A', 'ERROR', 'Script Execution Error', 
+                'Error: ' + ERROR_MESSAGE(), 1);
+    END CATCH
+
+    FETCH NEXT FROM db_cursor INTO @DatabaseName;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+-- =======================================================================
+-- Generate Discrepancy Report
+-- =======================================================================
+
+-- Compare column definitions across databases for each table
+;WITH ColumnBaseline AS (
+    SELECT 
+        TableName,
+        ColumnName,
+        OrdinalPosition,
+        DataType,
+        MaxLength,
+        Precision,
+        Scale,
+        IsNullable,
+        IsPrimaryKey,
+        COUNT(DISTINCT DatabaseName) as DatabaseCount,
+        COUNT(*) OVER(PARTITION BY TableName, ColumnName) as ColumnOccurrences
+    FROM #ColumnComparison
+    GROUP BY TableName, ColumnName, OrdinalPosition, DataType, MaxLength, Precision, Scale, IsNullable, IsPrimaryKey
+),
+ColumnDiscrepancies AS (
+    -- Identify columns missing in some databases
+    SELECT DISTINCT
+        cc.DatabaseName,
+        cc.TableName,
+        'COLUMN' as ObjectType,
+        'Missing Column' as DiscrepancyType,
+        'Column ''' + cc.ColumnName + ''' exists in other databases but is missing here' as DiscrepancyDetails,
+        1 as SeverityLevel
+    FROM #ColumnComparison cc
+    WHERE NOT EXISTS (
+        SELECT 1 
+        FROM ColumnBaseline cb 
+        WHERE cb.TableName = cc.TableName 
+            AND cb.ColumnName = cc.ColumnName
+            AND cb.DatabaseCount = (SELECT COUNT(DISTINCT DatabaseName) FROM #ColumnComparison WHERE TableName = cc.TableName)
+    )
+    
+    UNION ALL
+    
+    -- Identify column definition differences
+    SELECT 
+        cc.DatabaseName,
+        cc.TableName,
+        'COLUMN' as ObjectType,
+        'Column Definition Difference' as DiscrepancyType,
+        'Column ''' + cc.ColumnName + ''' - Current: ' + 
+            cc.DataType + 
+            CASE 
+                WHEN cc.DataType IN ('char', 'varchar', 'nchar', 'nvarchar') 
+                    THEN '(' + CASE WHEN cc.MaxLength = -1 THEN 'MAX' ELSE CAST(cc.MaxLength AS varchar) END + ')'
+                WHEN cc.DataType IN ('decimal', 'numeric') 
+                    THEN '(' + CAST(cc.Precision AS varchar) + ',' + CAST(cc.Scale AS varchar) + ')'
+                ELSE ''
+            END +
+            CASE WHEN cc.IsNullable = 1 THEN ' NULL' ELSE ' NOT NULL' END +
+            ' vs Expected: ' +
+            cb.DataType + 
+            CASE 
+                WHEN cb.DataType IN ('char', 'varchar', 'nchar', 'nvarchar') 
+                    THEN '(' + CASE WHEN cb.MaxLength = -1 THEN 'MAX' ELSE CAST(cb.MaxLength AS varchar) END + ')'
+                WHEN cb.DataType IN ('decimal', 'numeric') 
+                    THEN '(' + CAST(cb.Precision AS varchar) + ',' + CAST(cb.Scale AS varchar) + ')'
+                ELSE ''
+            END +
+            CASE WHEN cb.IsNullable = 1 THEN ' NULL' ELSE ' NOT NULL' END as DiscrepancyDetails,
+        2 as SeverityLevel
+    FROM #ColumnComparison cc
+    INNER JOIN (
+        SELECT TableName, ColumnName, 
+               MAX(DataType) as DataType, MAX(MaxLength) as MaxLength, 
+               MAX(Precision) as Precision, MAX(Scale) as Scale,
+               MAX(CAST(IsNullable AS int)) as IsNullable,
+               MAX(OrdinalPosition) as OrdinalPosition
+        FROM ColumnBaseline
+        WHERE ColumnOccurrences > 1
+        GROUP BY TableName, ColumnName
+    ) cb ON cc.TableName = cb.TableName AND cc.ColumnName = cb.ColumnName
+    WHERE (cc.DataType <> cb.DataType 
+        OR cc.MaxLength <> cb.MaxLength 
+        OR cc.Precision <> cb.Precision 
+        OR cc.Scale <> cb.Scale 
+        OR cc.IsNullable <> cb.IsNullable)
+)
+
+INSERT INTO #DiscrepancyReport (DatabaseName, TableName, ObjectType, DiscrepancyType, DiscrepancyDetails, SeverityLevel)
+SELECT * FROM ColumnDiscrepancies;
+
+-- Compare index definitions across databases
+;WITH IndexBaseline AS (
+    SELECT 
+        TableName,
+        IndexName,
+        IndexType,
+        IsPrimaryKey,
+        IsUnique,
+        KeyColumns,
+        IncludedColumns,
+        COUNT(DISTINCT DatabaseName) as DatabaseCount,
+        COUNT(*) OVER(PARTITION BY TableName, IndexName) as IndexOccurrences
+    FROM #IndexComparison
+    GROUP BY TableName, IndexName, IndexType, IsPrimaryKey, IsUnique, KeyColumns, IncludedColumns
+),
+IndexDiscrepancies AS (
+    -- Identify missing indexes
+    SELECT DISTINCT
+        ic.DatabaseName,
+        ic.TableName,
+        'INDEX' as ObjectType,
+        'Missing Index' as DiscrepancyType,
+        'Index ''' + ic.IndexName + ''' exists in other databases but is missing here' as DiscrepancyDetails,
+        2 as SeverityLevel
+    FROM #IndexComparison ic
+    WHERE NOT EXISTS (
+        SELECT 1 
+        FROM IndexBaseline ib 
+        WHERE ib.TableName = ic.TableName 
+            AND ib.IndexName = ic.IndexName
+            AND ib.DatabaseCount = (SELECT COUNT(DISTINCT DatabaseName) FROM #IndexComparison WHERE TableName = ic.TableName)
+    )
+    
+    UNION ALL
+    
+    -- Identify index definition differences
+    SELECT 
+        ic.DatabaseName,
+        ic.TableName,
+        'INDEX' as ObjectType,
+        'Index Definition Difference' as DiscrepancyType,
+        'Index ''' + ic.IndexName + ''' - Current: ' +
+            'Type=' + ic.IndexTypeDesc + 
+            ', PK=' + CAST(ic.IsPrimaryKey AS varchar) +
+            ', Unique=' + CAST(ic.IsUnique AS varchar) +
+            ', Keys=[' + ISNULL(ic.KeyColumns, '') + ']' +
+            ', Includes=[' + ISNULL(ic.IncludedColumns, '') + ']' +
+            ' vs Expected: ' +
+            'Type=' + ib.IndexTypeDesc + 
+            ', PK=' + CAST(ib.IsPrimaryKey AS varchar) +
+            ', Unique=' + CAST(ib.IsUnique AS varchar) +
+            ', Keys=[' + ISNULL(ib.KeyColumns, '') + ']' +
+            ', Includes=[' + ISNULL(ib.IncludedColumns, '') + ']' as DiscrepancyDetails,
+        2 as SeverityLevel
+    FROM #IndexComparison ic
+    INNER JOIN (
+        SELECT TableName, IndexName, 
+               MAX(IndexType) as IndexType, MAX(IndexTypeDesc) as IndexTypeDesc,
+               MAX(CAST(IsPrimaryKey AS int)) as IsPrimaryKey,
+               MAX(CAST(IsUnique AS int)) as IsUnique,
+               MAX(KeyColumns) as KeyColumns,
+               MAX(IncludedColumns) as IncludedColumns
+        FROM IndexBaseline
+        WHERE IndexOccurrences > 1
+        GROUP BY TableName, IndexName
+    ) ib ON ic.TableName = ib.TableName AND ic.IndexName = ib.IndexName
+    WHERE (ic.IndexType <> ib.IndexType 
+        OR ic.IsPrimaryKey <> ib.IsPrimaryKey 
+        OR ic.IsUnique <> ib.IsUnique
+        OR ISNULL(ic.KeyColumns, '') <> ISNULL(ib.KeyColumns, '')
+        OR ISNULL(ic.IncludedColumns, '') <> ISNULL(ib.IncludedColumns, ''))
+)
+
+INSERT INTO #DiscrepancyReport (DatabaseName, TableName, ObjectType, DiscrepancyType, DiscrepancyDetails, SeverityLevel)
+SELECT * FROM IndexDiscrepancies;
+
+-- Identify databases missing entire tables
+;WITH TablePresence AS (
+    SELECT DISTINCT DatabaseName, TableName
+    FROM #ColumnComparison
+    UNION
+    SELECT DISTINCT DatabaseName, TableName
+    FROM #IndexComparison
+),
+AllTables AS (
+    SELECT DISTINCT TableName FROM (VALUES ('MSG_1'), ('MSG_2'), ('Traref')) AS t(TableName)
+),
+AllDatabases AS (
+    SELECT DISTINCT DatabaseName FROM #ColumnComparison
+    UNION
+    SELECT DISTINCT DatabaseName FROM #IndexComparison
+)
+INSERT INTO #DiscrepancyReport (DatabaseName, TableName, ObjectType, DiscrepancyType, DiscrepancyDetails, SeverityLevel)
+SELECT 
+    ad.DatabaseName,
+    at.TableName,
+    'TABLE' as ObjectType,
+    'Missing Table' as DiscrepancyType,
+    'Table ''' + at.TableName + ''' is completely missing from this database' as DiscrepancyDetails,
+    1 as SeverityLevel
+FROM AllDatabases ad
+CROSS JOIN AllTables at
+WHERE NOT EXISTS (
+    SELECT 1 
+    FROM TablePresence tp 
+    WHERE tp.DatabaseName = ad.DatabaseName 
+        AND tp.TableName = at.TableName
+);
+
+-- =======================================================================
+-- Final Report Output
+-- =======================================================================
+
+-- Summary by Severity
+PRINT '===============================================================================';
+PRINT 'DATABASE COMPARISON REPORT - 
+PRINT '===============================================================================';
+PRINT '';
+
+SELECT 
+    SeverityLevel,
+    CASE SeverityLevel 
+        WHEN 1 THEN 'CRITICAL'
+        WHEN 2 THEN 'WARNING'
+        WHEN 3 THEN 'INFO'
+    END as Severity,
+    COUNT(*) as IssueCount
+FROM #DiscrepancyReport
+GROUP BY SeverityLevel
+ORDER BY SeverityLevel;
+
+PRINT '';
+PRINT '===============================================================================';
+PRINT 'DETAILED DISCREPANCIES BY DATABASE AND TABLE';
+PRINT '===============================================================================';
+PRINT '';
+
+-- Detailed report grouped by Database, Table, ObjectType
+SELECT 
+    DatabaseName,
+    TableName,
+    ObjectType,
+    DiscrepancyType,
+    DiscrepancyDetails,
+    CASE SeverityLevel 
+        WHEN 1 THEN 'CRITICAL'
+        WHEN 2 THEN 'WARNING'
+        WHEN 3 THEN 'INFO'
+    END as Severity
+FROM #DiscrepancyReport
+ORDER BY 
+    DatabaseName,
+    TableName,
+    ObjectType,
+    CASE DiscrepancyType 
+        WHEN 'Missing Table' THEN 1
+        WHEN 'Missing Column' THEN 2
+        WHEN 'Column Definition Difference' THEN 3
+        WHEN 'Missing Index' THEN 4
+        WHEN 'Index Definition Difference' THEN 5
+        ELSE 6
+    END;
+
+-- If no discrepancies found
+IF NOT EXISTS (SELECT 1 FROM #DiscrepancyReport)
+BEGIN
+    PRINT '';
+    PRINT 'NO DISCREPANCIES FOUND - All databases have consistent definitions for MSG_1, MSG_2, and Traref tables.';
+    PRINT '';
+END
+
+-- Optional: Export to a table for further analysis
+-- SELECT * INTO DBA_TableComparisonResults FROM #DiscrepancyReport;
+
+-- Cleanup
+DROP TABLE #ColumnComparison;
+DROP TABLE #IndexComparison;
+DROP TABLE #DiscrepancyReport;
+
+PRINT '';
+PRINT '===============================================================================';
+PRINT 'Report generation complete.';
+PRINT '===============================================================================';
