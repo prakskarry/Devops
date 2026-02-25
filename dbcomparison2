@@ -1,12 +1,6 @@
 SET NOCOUNT ON;
 
 ------------------------------------------------------------
--- CONFIGURATION
-------------------------------------------------------------
-DECLARE @TableList TABLE (TableName SYSNAME);
-INSERT INTO @TableList VALUES ('MSG_1'),('MSG_2'),('Traref');
-
-------------------------------------------------------------
 -- TEMP TABLES
 ------------------------------------------------------------
 IF OBJECT_ID('tempdb..#ColumnMeta') IS NOT NULL DROP TABLE #ColumnMeta;
@@ -18,7 +12,11 @@ CREATE TABLE #ColumnMeta
     SchemaName   SYSNAME,
     TableName    SYSNAME,
     ColumnName   SYSNAME,
-    ColumnSignature NVARCHAR(MAX)
+    DataType     SYSNAME,
+    MaxLength    INT,
+    PrecisionVal INT,
+    ScaleVal     INT,
+    IsNullable   BIT
 );
 
 CREATE TABLE #IndexMeta
@@ -27,7 +25,11 @@ CREATE TABLE #IndexMeta
     SchemaName   SYSNAME,
     TableName    SYSNAME,
     IndexName    SYSNAME,
-    IndexSignature NVARCHAR(MAX)
+    IndexType    NVARCHAR(60),
+    IsPrimaryKey BIT,
+    IsUnique     BIT,
+    KeyColumns   NVARCHAR(MAX),
+    IncludedColumns NVARCHAR(MAX)
 );
 
 ------------------------------------------------------------
@@ -38,158 +40,129 @@ DECLARE @sql NVARCHAR(MAX) = '';
 SELECT @sql += '
 USE ' + QUOTENAME(name) + ';
 
-IF DB_ID() IS NOT NULL
-BEGIN
-    --------------------------------------------------------
-    -- COLUMN METADATA
-    --------------------------------------------------------
-    INSERT INTO #ColumnMeta
-    SELECT
-        DB_NAME(),
-        s.name,
-        t.name,
-        c.name,
-        ty.name + ''|'' +
-        CAST(c.max_length AS VARCHAR(10)) + ''|'' +
-        CAST(c.precision AS VARCHAR(10)) + ''|'' +
-        CAST(c.scale AS VARCHAR(10)) + ''|'' +
-        CAST(c.is_nullable AS VARCHAR(1))
-    FROM sys.tables t
-    JOIN sys.schemas s ON t.schema_id = s.schema_id
-    JOIN sys.columns c ON t.object_id = c.object_id
-    JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-    WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'');
+INSERT INTO #ColumnMeta
+SELECT
+    DB_NAME(),
+    s.name,
+    t.name,
+    c.name,
+    ty.name,
+    c.max_length,
+    c.precision,
+    c.scale,
+    c.is_nullable
+FROM sys.tables t
+JOIN sys.schemas s ON t.schema_id = s.schema_id
+JOIN sys.columns c ON t.object_id = c.object_id
+JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'');
 
-    --------------------------------------------------------
-    -- INDEX METADATA
-    --------------------------------------------------------
-    INSERT INTO #IndexMeta
-    SELECT
-        DB_NAME(),
-        s.name,
-        t.name,
-        i.name,
-        i.type_desc + ''|'' +
-        CAST(i.is_primary_key AS VARCHAR(1)) + ''|'' +
-        CAST(i.is_unique AS VARCHAR(1)) + ''|'' +
+INSERT INTO #IndexMeta
+SELECT
+    DB_NAME(),
+    s.name,
+    t.name,
+    i.name,
+    i.type_desc,
+    i.is_primary_key,
+    i.is_unique,
 
-        -- KEY COLUMNS
-        ISNULL(STUFF((
-            SELECT '','' + col.name + '' '' +
-                   CASE ic.is_descending_key WHEN 1 THEN ''DESC'' ELSE ''ASC'' END
-            FROM sys.index_columns ic
-            JOIN sys.columns col 
-              ON ic.object_id = col.object_id 
-             AND ic.column_id = col.column_id
-            WHERE ic.object_id = i.object_id
-              AND ic.index_id = i.index_id
-              AND ic.is_included_column = 0
-            ORDER BY ic.key_ordinal
-            FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
-        ,1,1,'''')
-        ,'''') + ''|'' +
+    -- Key Columns with Sort Order
+    ISNULL(STUFF((
+        SELECT '','' + col.name + '' '' +
+               CASE ic.is_descending_key WHEN 1 THEN ''DESC'' ELSE ''ASC'' END
+        FROM sys.index_columns ic
+        JOIN sys.columns col 
+          ON ic.object_id = col.object_id 
+         AND ic.column_id = col.column_id
+        WHERE ic.object_id = i.object_id
+          AND ic.index_id = i.index_id
+          AND ic.is_included_column = 0
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
+    ,1,1,'''')
+    ,'''') ,
 
-        -- INCLUDED COLUMNS
-        ISNULL(STUFF((
-            SELECT '','' + col.name
-            FROM sys.index_columns ic
-            JOIN sys.columns col 
-              ON ic.object_id = col.object_id 
-             AND ic.column_id = col.column_id
-            WHERE ic.object_id = i.object_id
-              AND ic.index_id = i.index_id
-              AND ic.is_included_column = 1
-            ORDER BY col.name
-            FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
-        ,1,1,'''')
-        ,'''')
-    FROM sys.tables t
-    JOIN sys.schemas s ON t.schema_id = s.schema_id
-    JOIN sys.indexes i ON t.object_id = i.object_id
-    WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'')
-      AND i.type > 0;
-END;
+    -- Included Columns
+    ISNULL(STUFF((
+        SELECT '','' + col.name
+        FROM sys.index_columns ic
+        JOIN sys.columns col 
+          ON ic.object_id = col.object_id 
+         AND ic.column_id = col.column_id
+        WHERE ic.object_id = i.object_id
+          AND ic.index_id = i.index_id
+          AND ic.is_included_column = 1
+        ORDER BY col.name
+        FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
+    ,1,1,'''')
+    ,'''')
+FROM sys.tables t
+JOIN sys.schemas s ON t.schema_id = s.schema_id
+JOIN sys.indexes i ON t.object_id = i.object_id
+WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'')
+  AND i.type > 0;
 '
 FROM sys.databases
 WHERE state = 0
-  AND database_id > 4;   -- exclude system DBs
+  AND database_id > 4;
 
 EXEC (@sql);
 
 ------------------------------------------------------------
--- COLUMN BASELINE (MOST COMMON STRUCTURE)
+-- COLUMN DISCREPANCY REPORT
 ------------------------------------------------------------
-;WITH ColumnCounts AS
+;WITH Baseline AS
 (
-    SELECT SchemaName, TableName, ColumnName, ColumnSignature,
-           COUNT(*) AS Cnt
+    SELECT SchemaName, TableName, ColumnName,
+           DataType, MaxLength, PrecisionVal, ScaleVal, IsNullable,
+           COUNT(*) Cnt,
+           ROW_NUMBER() OVER
+           (PARTITION BY SchemaName, TableName, ColumnName
+            ORDER BY COUNT(*) DESC) rn
     FROM #ColumnMeta
-    GROUP BY SchemaName, TableName, ColumnName, ColumnSignature
-),
-ColumnRank AS
-(
-    SELECT *,
-           ROW_NUMBER() OVER (
-               PARTITION BY SchemaName, TableName, ColumnName
-               ORDER BY Cnt DESC
-           ) rn
-    FROM ColumnCounts
-),
-BaselineColumns AS
-(
-    SELECT * FROM ColumnRank WHERE rn = 1
+    GROUP BY SchemaName, TableName, ColumnName,
+             DataType, MaxLength, PrecisionVal, ScaleVal, IsNullable
 )
-
-------------------------------------------------------------
--- INDEX BASELINE
-------------------------------------------------------------
-,IndexCounts AS
-(
-    SELECT SchemaName, TableName, IndexName, IndexSignature,
-           COUNT(*) AS Cnt
-    FROM #IndexMeta
-    GROUP BY SchemaName, TableName, IndexName, IndexSignature
-),
-IndexRank AS
-(
-    SELECT *,
-           ROW_NUMBER() OVER (
-               PARTITION BY SchemaName, TableName, IndexName
-               ORDER BY Cnt DESC
-           ) rn
-    FROM IndexCounts
-),
-BaselineIndexes AS
-(
-    SELECT * FROM IndexRank WHERE rn = 1
-)
-
-------------------------------------------------------------
--- FINAL DISCREPANCY REPORT
-------------------------------------------------------------
 SELECT
     c.DatabaseName,
     c.SchemaName,
     c.TableName,
     'COLUMN' AS ObjectType,
-    c.ColumnName AS ObjectName,
-    CASE 
-        WHEN c.ColumnSignature IS NULL THEN 'Missing Column'
-        WHEN c.ColumnSignature <> b.ColumnSignature THEN 'Column Definition Mismatch'
+    c.ColumnName,
+    CASE
+        WHEN c.ColumnName IS NULL THEN 'Missing Column'
+        WHEN c.DataType <> b.DataType THEN 'Data Type Mismatch'
+        WHEN c.MaxLength <> b.MaxLength THEN 'Length Mismatch'
+        WHEN c.PrecisionVal <> b.PrecisionVal THEN 'Precision Mismatch'
+        WHEN c.ScaleVal <> b.ScaleVal THEN 'Scale Mismatch'
+        WHEN c.IsNullable <> b.IsNullable THEN 'Nullability Mismatch'
     END AS Issue,
-    c.ColumnSignature AS CurrentDefinition,
-    b.ColumnSignature AS BaselineDefinition
-FROM BaselineColumns b
+    c.DataType,
+    c.MaxLength,
+    c.PrecisionVal,
+    c.ScaleVal,
+    c.IsNullable
+FROM Baseline b
 LEFT JOIN #ColumnMeta c
   ON c.SchemaName = b.SchemaName
  AND c.TableName = b.TableName
  AND c.ColumnName = b.ColumnName
-
-WHERE c.ColumnSignature IS NULL
-   OR c.ColumnSignature <> b.ColumnSignature
+WHERE b.rn = 1
+  AND (
+       c.ColumnName IS NULL
+    OR c.DataType <> b.DataType
+    OR c.MaxLength <> b.MaxLength
+    OR c.PrecisionVal <> b.PrecisionVal
+    OR c.ScaleVal <> b.ScaleVal
+    OR c.IsNullable <> b.IsNullable
+  )
 
 UNION ALL
 
+------------------------------------------------------------
+-- INDEX DISCREPANCY REPORT
+------------------------------------------------------------
 SELECT
     i.DatabaseName,
     i.SchemaName,
@@ -197,25 +170,41 @@ SELECT
     'INDEX' AS ObjectType,
     i.IndexName,
     CASE
-        WHEN i.IndexSignature IS NULL THEN 'Missing Index'
-        WHEN i.IndexSignature <> b.IndexSignature THEN 'Index Definition Mismatch'
+        WHEN i.IndexName IS NULL THEN 'Missing Index'
+        WHEN i.IndexType <> b.IndexType THEN 'Index Type Mismatch'
+        WHEN i.IsPrimaryKey <> b.IsPrimaryKey THEN 'Primary Key Flag Mismatch'
+        WHEN i.IsUnique <> b.IsUnique THEN 'Unique Flag Mismatch'
+        WHEN i.KeyColumns <> b.KeyColumns THEN 'Key Column Definition Mismatch'
+        WHEN ISNULL(i.IncludedColumns,'') <> ISNULL(b.IncludedColumns,'') THEN 'Included Column Mismatch'
     END,
-    i.IndexSignature,
-    b.IndexSignature
-FROM BaselineIndexes b
+    i.IndexType,
+    i.IsPrimaryKey,
+    i.IsUnique,
+    i.KeyColumns,
+    i.IncludedColumns
+FROM
+(
+    SELECT *,
+           ROW_NUMBER() OVER
+           (PARTITION BY SchemaName, TableName, IndexName
+            ORDER BY COUNT(*) OVER (PARTITION BY SchemaName, TableName, IndexName) DESC) rn
+    FROM #IndexMeta
+) b
 LEFT JOIN #IndexMeta i
   ON i.SchemaName = b.SchemaName
  AND i.TableName = b.TableName
  AND i.IndexName = b.IndexName
+WHERE b.rn = 1
+  AND (
+       i.IndexName IS NULL
+    OR i.IndexType <> b.IndexType
+    OR i.IsPrimaryKey <> b.IsPrimaryKey
+    OR i.IsUnique <> b.IsUnique
+    OR i.KeyColumns <> b.KeyColumns
+    OR ISNULL(i.IncludedColumns,'') <> ISNULL(b.IncludedColumns,'')
+  )
 
-WHERE i.IndexSignature IS NULL
-   OR i.IndexSignature <> b.IndexSignature
-
-ORDER BY
-    DatabaseName,
-    TableName,
-    ObjectType,
-    ObjectName;
+ORDER BY DatabaseName, TableName, ObjectType, ColumnName;
 
 ------------------------------------------------------------
 -- CLEANUP
