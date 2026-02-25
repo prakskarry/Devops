@@ -1,44 +1,50 @@
 SET NOCOUNT ON;
 
 ------------------------------------------------------------
+-- CONFIGURATION
+------------------------------------------------------------
+DECLARE @TableList TABLE (TableName SYSNAME);
+INSERT INTO @TableList VALUES ('MSG_1'),('MSG_2'),('Traref');
+
+------------------------------------------------------------
 -- TEMP TABLES
 ------------------------------------------------------------
-IF OBJECT_ID('tempdb..#Columns') IS NOT NULL DROP TABLE #Columns;
-IF OBJECT_ID('tempdb..#Indexes') IS NOT NULL DROP TABLE #Indexes;
+IF OBJECT_ID('tempdb..#ColumnMeta') IS NOT NULL DROP TABLE #ColumnMeta;
+IF OBJECT_ID('tempdb..#IndexMeta') IS NOT NULL DROP TABLE #IndexMeta;
 
-CREATE TABLE #Columns
+CREATE TABLE #ColumnMeta
 (
     DatabaseName SYSNAME,
-    SchemaName SYSNAME,
-    TableName SYSNAME,
-    ColumnName SYSNAME,
+    SchemaName   SYSNAME,
+    TableName    SYSNAME,
+    ColumnName   SYSNAME,
     ColumnSignature NVARCHAR(MAX)
 );
 
-CREATE TABLE #Indexes
+CREATE TABLE #IndexMeta
 (
     DatabaseName SYSNAME,
-    SchemaName SYSNAME,
-    TableName SYSNAME,
-    IndexName SYSNAME,
+    SchemaName   SYSNAME,
+    TableName    SYSNAME,
+    IndexName    SYSNAME,
     IndexSignature NVARCHAR(MAX)
 );
 
 ------------------------------------------------------------
--- BUILD DYNAMIC SQL
+-- COLLECT METADATA FROM ALL USER DATABASES
 ------------------------------------------------------------
 DECLARE @sql NVARCHAR(MAX) = '';
 
-SELECT @sql = @sql + '
-USE [' + name + '];
+SELECT @sql += '
+USE ' + QUOTENAME(name) + ';
 
 IF DB_ID() IS NOT NULL
 BEGIN
     --------------------------------------------------------
     -- COLUMN METADATA
     --------------------------------------------------------
-    INSERT INTO #Columns
-    SELECT 
+    INSERT INTO #ColumnMeta
+    SELECT
         DB_NAME(),
         s.name,
         t.name,
@@ -47,32 +53,34 @@ BEGIN
         CAST(c.max_length AS VARCHAR(10)) + ''|'' +
         CAST(c.precision AS VARCHAR(10)) + ''|'' +
         CAST(c.scale AS VARCHAR(10)) + ''|'' +
-        CAST(c.is_nullable AS VARCHAR(1)) + ''|'' +
-        CAST(c.is_identity AS VARCHAR(1))
+        CAST(c.is_nullable AS VARCHAR(1))
     FROM sys.tables t
     JOIN sys.schemas s ON t.schema_id = s.schema_id
     JOIN sys.columns c ON t.object_id = c.object_id
     JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-    WHERE t.name IN (''MSG_1'',''MSG_2'',''TradeXref'');
+    WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'');
 
     --------------------------------------------------------
     -- INDEX METADATA
     --------------------------------------------------------
-    INSERT INTO #Indexes
+    INSERT INTO #IndexMeta
     SELECT
         DB_NAME(),
         s.name,
         t.name,
         i.name,
         i.type_desc + ''|'' +
+        CAST(i.is_primary_key AS VARCHAR(1)) + ''|'' +
         CAST(i.is_unique AS VARCHAR(1)) + ''|'' +
+
+        -- KEY COLUMNS
         ISNULL(STUFF((
             SELECT '','' + col.name + '' '' +
                    CASE ic.is_descending_key WHEN 1 THEN ''DESC'' ELSE ''ASC'' END
             FROM sys.index_columns ic
             JOIN sys.columns col 
-                 ON ic.object_id = col.object_id 
-                AND ic.column_id = col.column_id
+              ON ic.object_id = col.object_id 
+             AND ic.column_id = col.column_id
             WHERE ic.object_id = i.object_id
               AND ic.index_id = i.index_id
               AND ic.is_included_column = 0
@@ -80,115 +88,137 @@ BEGIN
             FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
         ,1,1,'''')
         ,'''') + ''|'' +
+
+        -- INCLUDED COLUMNS
         ISNULL(STUFF((
             SELECT '','' + col.name
             FROM sys.index_columns ic
             JOIN sys.columns col 
-                 ON ic.object_id = col.object_id 
-                AND ic.column_id = col.column_id
+              ON ic.object_id = col.object_id 
+             AND ic.column_id = col.column_id
             WHERE ic.object_id = i.object_id
               AND ic.index_id = i.index_id
               AND ic.is_included_column = 1
+            ORDER BY col.name
             FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
         ,1,1,'''')
         ,'''')
     FROM sys.tables t
     JOIN sys.schemas s ON t.schema_id = s.schema_id
     JOIN sys.indexes i ON t.object_id = i.object_id
-    WHERE t.name IN (''MSG_1'',''MSG_2'',''TradeXref'')
+    WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'')
       AND i.type > 0;
 END;
 '
 FROM sys.databases
 WHERE state = 0
-  AND database_id > 4;  -- exclude system DBs
+  AND database_id > 4;   -- exclude system DBs
 
 EXEC (@sql);
 
 ------------------------------------------------------------
--- COLUMN DRIFT DETECTION
+-- COLUMN BASELINE (MOST COMMON STRUCTURE)
 ------------------------------------------------------------
 ;WITH ColumnCounts AS
 (
     SELECT SchemaName, TableName, ColumnName, ColumnSignature,
            COUNT(*) AS Cnt
-    FROM #Columns
+    FROM #ColumnMeta
     GROUP BY SchemaName, TableName, ColumnName, ColumnSignature
 ),
 ColumnRank AS
 (
     SELECT *,
-           ROW_NUMBER() OVER
-           (PARTITION BY SchemaName, TableName, ColumnName
-            ORDER BY Cnt DESC) AS rn
+           ROW_NUMBER() OVER (
+               PARTITION BY SchemaName, TableName, ColumnName
+               ORDER BY Cnt DESC
+           ) rn
     FROM ColumnCounts
 ),
 BaselineColumns AS
 (
-    SELECT *
-    FROM ColumnRank
-    WHERE rn = 1
+    SELECT * FROM ColumnRank WHERE rn = 1
 )
 
-SELECT 
-    c.DatabaseName,
-    c.SchemaName,
-    c.TableName,
-    c.ColumnName,
-    'Column Drift' AS IssueType,
-    c.ColumnSignature AS CurrentDefinition,
-    b.ColumnSignature AS BaselineDefinition
-FROM #Columns c
-JOIN BaselineColumns b
-     ON c.SchemaName = b.SchemaName
-    AND c.TableName = b.TableName
-    AND c.ColumnName = b.ColumnName
-WHERE c.ColumnSignature <> b.ColumnSignature
-ORDER BY SchemaName, TableName, ColumnName;
-
 ------------------------------------------------------------
--- INDEX DRIFT DETECTION
+-- INDEX BASELINE
 ------------------------------------------------------------
-;WITH IndexCounts AS
+,IndexCounts AS
 (
     SELECT SchemaName, TableName, IndexName, IndexSignature,
            COUNT(*) AS Cnt
-    FROM #Indexes
+    FROM #IndexMeta
     GROUP BY SchemaName, TableName, IndexName, IndexSignature
 ),
 IndexRank AS
 (
     SELECT *,
-           ROW_NUMBER() OVER
-           (PARTITION BY SchemaName, TableName, IndexName
-            ORDER BY Cnt DESC) AS rn
+           ROW_NUMBER() OVER (
+               PARTITION BY SchemaName, TableName, IndexName
+               ORDER BY Cnt DESC
+           ) rn
     FROM IndexCounts
 ),
 BaselineIndexes AS
 (
-    SELECT *
-    FROM IndexRank
-    WHERE rn = 1
+    SELECT * FROM IndexRank WHERE rn = 1
 )
 
-SELECT 
+------------------------------------------------------------
+-- FINAL DISCREPANCY REPORT
+------------------------------------------------------------
+SELECT
+    c.DatabaseName,
+    c.SchemaName,
+    c.TableName,
+    'COLUMN' AS ObjectType,
+    c.ColumnName AS ObjectName,
+    CASE 
+        WHEN c.ColumnSignature IS NULL THEN 'Missing Column'
+        WHEN c.ColumnSignature <> b.ColumnSignature THEN 'Column Definition Mismatch'
+    END AS Issue,
+    c.ColumnSignature AS CurrentDefinition,
+    b.ColumnSignature AS BaselineDefinition
+FROM BaselineColumns b
+LEFT JOIN #ColumnMeta c
+  ON c.SchemaName = b.SchemaName
+ AND c.TableName = b.TableName
+ AND c.ColumnName = b.ColumnName
+
+WHERE c.ColumnSignature IS NULL
+   OR c.ColumnSignature <> b.ColumnSignature
+
+UNION ALL
+
+SELECT
     i.DatabaseName,
     i.SchemaName,
     i.TableName,
+    'INDEX' AS ObjectType,
     i.IndexName,
-    'Index Drift' AS IssueType,
+    CASE
+        WHEN i.IndexSignature IS NULL THEN 'Missing Index'
+        WHEN i.IndexSignature <> b.IndexSignature THEN 'Index Definition Mismatch'
+    END,
     i.IndexSignature,
     b.IndexSignature
-FROM #Indexes i
-JOIN BaselineIndexes b
-     ON i.SchemaName = b.SchemaName
-    AND i.TableName = b.TableName
-    AND i.IndexName = b.IndexName
-WHERE i.IndexSignature <> b.IndexSignature
-ORDER BY SchemaName, TableName, IndexName;
+FROM BaselineIndexes b
+LEFT JOIN #IndexMeta i
+  ON i.SchemaName = b.SchemaName
+ AND i.TableName = b.TableName
+ AND i.IndexName = b.IndexName
+
+WHERE i.IndexSignature IS NULL
+   OR i.IndexSignature <> b.IndexSignature
+
+ORDER BY
+    DatabaseName,
+    TableName,
+    ObjectType,
+    ObjectName;
 
 ------------------------------------------------------------
 -- CLEANUP
 ------------------------------------------------------------
-DROP TABLE #Columns;
-DROP TABLE #Indexes;
+DROP TABLE #ColumnMeta;
+DROP TABLE #IndexMeta;
