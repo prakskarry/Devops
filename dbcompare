@@ -1,0 +1,116 @@
+SET NOCOUNT ON;
+
+IF OBJECT_ID('tempdb..#TableComparison') IS NOT NULL
+    DROP TABLE #TableComparison;
+
+CREATE TABLE #TableComparison
+(
+    DatabaseName        SYSNAME,
+    TableName           SYSNAME,
+    ColumnName          SYSNAME,
+    DataType            NVARCHAR(128),
+    MaxLength           INT,
+    PrecisionValue      INT,
+    ScaleValue          INT,
+    IsNullable          BIT,
+    IndexName           SYSNAME NULL,
+    IndexType           NVARCHAR(60) NULL,
+    IsPrimaryKey        BIT NULL,
+    IsUnique            BIT NULL,
+    KeyColumns          NVARCHAR(MAX) NULL,
+    IncludedColumns     NVARCHAR(MAX) NULL
+);
+
+DECLARE @SQL NVARCHAR(MAX) = '';
+
+SELECT @SQL = @SQL + '
+USE [' + name + '];
+
+IF EXISTS (SELECT 1 FROM sys.tables WHERE name IN (''MSG_1'',''MSG_2'',''Traef''))
+BEGIN
+INSERT INTO #TableComparison
+SELECT
+    DB_NAME() AS DatabaseName,
+    t.name AS TableName,
+    c.name AS ColumnName,
+    ty.name AS DataType,
+    c.max_length,
+    c.precision,
+    c.scale,
+    c.is_nullable,
+    i.name AS IndexName,
+    i.type_desc AS IndexType,
+    i.is_primary_key,
+    i.is_unique,
+
+    -- Key Columns
+    STUFF((
+        SELECT '','' + col.name
+        FROM sys.index_columns ic2
+        JOIN sys.columns col 
+            ON ic2.object_id = col.object_id 
+            AND ic2.column_id = col.column_id
+        WHERE ic2.object_id = t.object_id
+          AND ic2.index_id = i.index_id
+          AND ic2.is_included_column = 0
+        ORDER BY ic2.key_ordinal
+        FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
+    ,1,1,'''') AS KeyColumns,
+
+    -- Included Columns
+    STUFF((
+        SELECT '','' + col.name
+        FROM sys.index_columns ic3
+        JOIN sys.columns col 
+            ON ic3.object_id = col.object_id 
+            AND ic3.column_id = col.column_id
+        WHERE ic3.object_id = t.object_id
+          AND ic3.index_id = i.index_id
+          AND ic3.is_included_column = 1
+        FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
+    ,1,1,'''') AS IncludedColumns
+
+FROM sys.tables t
+JOIN sys.columns c 
+    ON t.object_id = c.object_id
+JOIN sys.types ty 
+    ON c.user_type_id = ty.user_type_id
+LEFT JOIN sys.index_columns ic 
+    ON ic.object_id = t.object_id 
+    AND ic.column_id = c.column_id
+LEFT JOIN sys.indexes i 
+    ON ic.object_id = i.object_id 
+    AND ic.index_id = i.index_id
+WHERE t.name IN (''MSG_1'',''MSG_2'',''Traef'')
+END
+'
+FROM sys.databases
+WHERE state_desc = 'ONLINE'
+AND database_id > 4;   -- exclude system DBs
+
+EXEC sp_executesql @SQL;
+
+-- Final Result
+SELECT *
+FROM #TableComparison
+ORDER BY TableName, ColumnName, DatabaseName, IndexName;
+------------------------------------------------------------------------
+
+SELECT TableName, ColumnName, DataType, MaxLength, PrecisionValue, ScaleValue, IsNullable,
+       COUNT(DISTINCT DatabaseName) AS DBCount
+FROM #TableComparison
+GROUP BY TableName, ColumnName, DataType, MaxLength, PrecisionValue, ScaleValue, IsNullable
+HAVING COUNT(DISTINCT DatabaseName) < 
+       (SELECT COUNT(*) FROM sys.databases WHERE state_desc='ONLINE' AND database_id > 4)
+ORDER BY TableName, ColumnName;
+
+----------------------------------------------------------------------
+
+SELECT TableName, IndexName, KeyColumns, IncludedColumns,
+       COUNT(DISTINCT DatabaseName) AS DBCount
+FROM #TableComparison
+WHERE IndexName IS NOT NULL
+GROUP BY TableName, IndexName, KeyColumns, IncludedColumns
+HAVING COUNT(DISTINCT DatabaseName) <
+       (SELECT COUNT(*) FROM sys.databases WHERE state_desc='ONLINE' AND database_id > 4)
+ORDER BY TableName, IndexName;
