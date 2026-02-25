@@ -1,12 +1,6 @@
 SET NOCOUNT ON;
 
 ------------------------------------------------------------
--- TABLES TO CHECK
-------------------------------------------------------------
-DECLARE @TargetTables TABLE (TableName SYSNAME);
-INSERT INTO @TargetTables VALUES ('MSG_1'),('MSG_2'),('TradeXref');
-
-------------------------------------------------------------
 -- TEMP TABLES
 ------------------------------------------------------------
 IF OBJECT_ID('tempdb..#Columns') IS NOT NULL DROP TABLE #Columns;
@@ -31,15 +25,15 @@ CREATE TABLE #Indexes
 );
 
 ------------------------------------------------------------
--- COLLECT METADATA FROM ALL DATABASES
+-- BUILD DYNAMIC SQL
 ------------------------------------------------------------
 DECLARE @sql NVARCHAR(MAX) = '';
 
 SELECT @sql = @sql + '
-IF DB_ID(''' + name + ''') IS NOT NULL
-BEGIN
-    USE [' + name + '];
+USE [' + name + '];
 
+IF DB_ID() IS NOT NULL
+BEGIN
     --------------------------------------------------------
     -- COLUMN METADATA
     --------------------------------------------------------
@@ -59,7 +53,7 @@ BEGIN
     JOIN sys.schemas s ON t.schema_id = s.schema_id
     JOIN sys.columns c ON t.object_id = c.object_id
     JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-    WHERE t.name IN (SELECT TableName FROM @TargetTables);
+    WHERE t.name IN (''MSG_1'',''MSG_2'',''TradeXref'');
 
     --------------------------------------------------------
     -- INDEX METADATA
@@ -101,18 +95,18 @@ BEGIN
     FROM sys.tables t
     JOIN sys.schemas s ON t.schema_id = s.schema_id
     JOIN sys.indexes i ON t.object_id = i.object_id
-    WHERE t.name IN (SELECT TableName FROM @TargetTables)
+    WHERE t.name IN (''MSG_1'',''MSG_2'',''TradeXref'')
       AND i.type > 0;
 END;
 '
 FROM sys.databases
 WHERE state = 0
-  AND database_id > 4;   -- exclude system DBs
+  AND database_id > 4;  -- exclude system DBs
 
-EXEC sp_executesql @sql, N'@TargetTables TABLE (TableName SYSNAME) READONLY', @TargetTables;
+EXEC (@sql);
 
 ------------------------------------------------------------
--- COLUMN BASELINE (MOST COMMON STRUCTURE)
+-- COLUMN DRIFT DETECTION
 ------------------------------------------------------------
 ;WITH ColumnCounts AS
 (
@@ -150,29 +144,10 @@ JOIN BaselineColumns b
     AND c.TableName = b.TableName
     AND c.ColumnName = b.ColumnName
 WHERE c.ColumnSignature <> b.ColumnSignature
-
-UNION ALL
-
-SELECT 
-    d.DatabaseName,
-    b.SchemaName,
-    b.TableName,
-    b.ColumnName,
-    'Missing Column' AS IssueType,
-    'MISSING',
-    b.ColumnSignature
-FROM BaselineColumns b
-CROSS JOIN (SELECT DISTINCT DatabaseName FROM #Columns) d
-LEFT JOIN #Columns c
-    ON c.DatabaseName = d.DatabaseName
-   AND c.SchemaName = b.SchemaName
-   AND c.TableName = b.TableName
-   AND c.ColumnName = b.ColumnName
-WHERE c.ColumnName IS NULL
 ORDER BY SchemaName, TableName, ColumnName;
 
 ------------------------------------------------------------
--- INDEX BASELINE
+-- INDEX DRIFT DETECTION
 ------------------------------------------------------------
 ;WITH IndexCounts AS
 (
@@ -210,25 +185,6 @@ JOIN BaselineIndexes b
     AND i.TableName = b.TableName
     AND i.IndexName = b.IndexName
 WHERE i.IndexSignature <> b.IndexSignature
-
-UNION ALL
-
-SELECT 
-    d.DatabaseName,
-    b.SchemaName,
-    b.TableName,
-    b.IndexName,
-    'Missing Index' AS IssueType,
-    'MISSING',
-    b.IndexSignature
-FROM BaselineIndexes b
-CROSS JOIN (SELECT DISTINCT DatabaseName FROM #Indexes) d
-LEFT JOIN #Indexes i
-    ON i.DatabaseName = d.DatabaseName
-   AND i.SchemaName = b.SchemaName
-   AND i.TableName = b.TableName
-   AND i.IndexName = b.IndexName
-WHERE i.IndexName IS NULL
 ORDER BY SchemaName, TableName, IndexName;
 
 ------------------------------------------------------------
