@@ -1,159 +1,141 @@
 SET NOCOUNT ON;
 
+------------------------------------------------------------
+-- TABLES TO CHECK
+------------------------------------------------------------
+DECLARE @TargetTables TABLE (TableName SYSNAME);
+INSERT INTO @TargetTables VALUES ('MSG_1'),('MSG_2'),('TradeXref');
+
+------------------------------------------------------------
+-- TEMP TABLES
+------------------------------------------------------------
 IF OBJECT_ID('tempdb..#Columns') IS NOT NULL DROP TABLE #Columns;
 IF OBJECT_ID('tempdb..#Indexes') IS NOT NULL DROP TABLE #Indexes;
 
 CREATE TABLE #Columns
 (
-    DatabaseName sysname,
-    SchemaName sysname,
-    TableName sysname,
-    ColumnName sysname,
-    OrdinalPosition int,
-    DataType sysname,
-    MaxLength int,
-    PrecisionValue int,
-    ScaleValue int,
-    IsNullable bit,
-    ColumnSignature nvarchar(500)
+    DatabaseName SYSNAME,
+    SchemaName SYSNAME,
+    TableName SYSNAME,
+    ColumnName SYSNAME,
+    ColumnSignature NVARCHAR(MAX)
 );
 
 CREATE TABLE #Indexes
 (
-    DatabaseName sysname,
-    SchemaName sysname,
-    TableName sysname,
-    IndexName sysname,
-    IsPrimaryKey bit,
-    IsUnique bit,
-    IndexTypeDesc nvarchar(60),
-    KeyColumns nvarchar(max),
-    IncludedColumns nvarchar(max),
-    IndexSignature nvarchar(max)
+    DatabaseName SYSNAME,
+    SchemaName SYSNAME,
+    TableName SYSNAME,
+    IndexName SYSNAME,
+    IndexSignature NVARCHAR(MAX)
 );
 
-DECLARE @sql nvarchar(max) = '';
+------------------------------------------------------------
+-- COLLECT METADATA FROM ALL DATABASES
+------------------------------------------------------------
+DECLARE @sql NVARCHAR(MAX) = '';
 
-SELECT @sql += '
-USE ' + QUOTENAME(name) + ';
-IF EXISTS (SELECT 1 FROM sys.tables WHERE name IN (''MSG_1'',''MSG_2'',''TradeXref''))
+SELECT @sql = @sql + '
+IF DB_ID(''' + name + ''') IS NOT NULL
 BEGIN
+    USE [' + name + '];
+
+    --------------------------------------------------------
+    -- COLUMN METADATA
+    --------------------------------------------------------
     INSERT INTO #Columns
-    SELECT
+    SELECT 
         DB_NAME(),
         s.name,
         t.name,
         c.name,
-        c.column_id,
-        tp.name,
-        c.max_length,
-        c.precision,
-        c.scale,
-        c.is_nullable,
-        tp.name + ''|'' +
-        CAST(c.max_length AS varchar) + ''|'' +
-        CAST(c.precision AS varchar) + ''|'' +
-        CAST(c.scale AS varchar) + ''|'' +
-        CAST(c.is_nullable AS varchar) + ''|'' +
-        CAST(c.column_id AS varchar)
+        ty.name + ''|'' +
+        CAST(c.max_length AS VARCHAR(10)) + ''|'' +
+        CAST(c.precision AS VARCHAR(10)) + ''|'' +
+        CAST(c.scale AS VARCHAR(10)) + ''|'' +
+        CAST(c.is_nullable AS VARCHAR(1)) + ''|'' +
+        CAST(c.is_identity AS VARCHAR(1))
     FROM sys.tables t
     JOIN sys.schemas s ON t.schema_id = s.schema_id
     JOIN sys.columns c ON t.object_id = c.object_id
-    JOIN sys.types tp ON c.user_type_id = tp.user_type_id
-    WHERE t.name IN (''MSG_1'',''MSG_2'',''TradeXref'');
+    JOIN sys.types ty ON c.user_type_id = ty.user_type_id
+    WHERE t.name IN (SELECT TableName FROM @TargetTables);
 
+    --------------------------------------------------------
+    -- INDEX METADATA
+    --------------------------------------------------------
     INSERT INTO #Indexes
     SELECT
         DB_NAME(),
         s.name,
         t.name,
         i.name,
-        i.is_primary_key,
-        i.is_unique,
-        i.type_desc,
-        STUFF((
-            SELECT '','' + c2.name +
-                   CASE WHEN ic2.is_descending_key = 1 THEN '' DESC'' ELSE '' ASC'' END
-            FROM sys.index_columns ic2
-            JOIN sys.columns c2 
-                 ON ic2.object_id = c2.object_id 
-                AND ic2.column_id = c2.column_id
-            WHERE ic2.object_id = i.object_id
-              AND ic2.index_id = i.index_id
-              AND ic2.is_included_column = 0
-            ORDER BY ic2.key_ordinal
-            FOR XML PATH(''''), TYPE).value(''.'',''nvarchar(max)'')
-        ,1,1,''''),
-        STUFF((
-            SELECT '','' + c3.name
-            FROM sys.index_columns ic3
-            JOIN sys.columns c3 
-                 ON ic3.object_id = c3.object_id 
-                AND ic3.column_id = c3.column_id
-            WHERE ic3.object_id = i.object_id
-              AND ic3.index_id = i.index_id
-              AND ic3.is_included_column = 1
-            FOR XML PATH(''''), TYPE).value(''.'',''nvarchar(max)'')
-        ,1,1,''''),
         i.type_desc + ''|'' +
-        CAST(i.is_unique AS varchar) + ''|'' +
-        CAST(i.is_primary_key AS varchar) + ''|'' +
+        CAST(i.is_unique AS VARCHAR(1)) + ''|'' +
         ISNULL(STUFF((
-            SELECT '','' + c2.name +
-                   CASE WHEN ic2.is_descending_key = 1 THEN '' DESC'' ELSE '' ASC'' END
-            FROM sys.index_columns ic2
-            JOIN sys.columns c2 
-                 ON ic2.object_id = c2.object_id 
-                AND ic2.column_id = c2.column_id
-            WHERE ic2.object_id = i.object_id
-              AND ic2.index_id = i.index_id
-              AND ic2.is_included_column = 0
-            ORDER BY ic2.key_ordinal
-            FOR XML PATH(''''), TYPE).value(''.'',''nvarchar(max)'')
-        ,1,1,''''),'''') + ''|'' +
+            SELECT '','' + col.name + '' '' +
+                   CASE ic.is_descending_key WHEN 1 THEN ''DESC'' ELSE ''ASC'' END
+            FROM sys.index_columns ic
+            JOIN sys.columns col 
+                 ON ic.object_id = col.object_id 
+                AND ic.column_id = col.column_id
+            WHERE ic.object_id = i.object_id
+              AND ic.index_id = i.index_id
+              AND ic.is_included_column = 0
+            ORDER BY ic.key_ordinal
+            FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
+        ,1,1,'''')
+        ,'''') + ''|'' +
         ISNULL(STUFF((
-            SELECT '','' + c3.name
-            FROM sys.index_columns ic3
-            JOIN sys.columns c3 
-                 ON ic3.object_id = c3.object_id 
-                AND ic3.column_id = c3.column_id
-            WHERE ic3.object_id = i.object_id
-              AND ic3.index_id = i.index_id
-              AND ic3.is_included_column = 1
-            FOR XML PATH(''''), TYPE).value(''.'',''nvarchar(max)'')
-        ,1,1,''''),'''')
+            SELECT '','' + col.name
+            FROM sys.index_columns ic
+            JOIN sys.columns col 
+                 ON ic.object_id = col.object_id 
+                AND ic.column_id = col.column_id
+            WHERE ic.object_id = i.object_id
+              AND ic.index_id = i.index_id
+              AND ic.is_included_column = 1
+            FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
+        ,1,1,'''')
+        ,'''')
     FROM sys.tables t
     JOIN sys.schemas s ON t.schema_id = s.schema_id
     JOIN sys.indexes i ON t.object_id = i.object_id
-    WHERE t.name IN (''MSG_1'',''MSG_2'',''TradeXref'')
+    WHERE t.name IN (SELECT TableName FROM @TargetTables)
       AND i.type > 0;
 END;
 '
 FROM sys.databases
-WHERE database_id > 4 AND state_desc = 'ONLINE';
+WHERE state = 0
+  AND database_id > 4;   -- exclude system DBs
 
-EXEC sp_executesql @sql;
+EXEC sp_executesql @sql, N'@TargetTables TABLE (TableName SYSNAME) READONLY', @TargetTables;
 
--------------------------------------------------------
--- COLUMN DRIFT (Most common definition baseline)
--------------------------------------------------------
-
-;WITH ColumnFrequency AS
+------------------------------------------------------------
+-- COLUMN BASELINE (MOST COMMON STRUCTURE)
+------------------------------------------------------------
+;WITH ColumnCounts AS
+(
+    SELECT SchemaName, TableName, ColumnName, ColumnSignature,
+           COUNT(*) AS Cnt
+    FROM #Columns
+    GROUP BY SchemaName, TableName, ColumnName, ColumnSignature
+),
+ColumnRank AS
 (
     SELECT *,
-           COUNT(*) OVER (PARTITION BY SchemaName, TableName, ColumnName, ColumnSignature) AS SignatureCount,
-           ROW_NUMBER() OVER (
-               PARTITION BY SchemaName, TableName, ColumnName
-               ORDER BY COUNT(*) OVER (PARTITION BY SchemaName, TableName, ColumnName, ColumnSignature) DESC
-           ) AS rn
-    FROM #Columns
+           ROW_NUMBER() OVER
+           (PARTITION BY SchemaName, TableName, ColumnName
+            ORDER BY Cnt DESC) AS rn
+    FROM ColumnCounts
 ),
 BaselineColumns AS
 (
     SELECT *
-    FROM ColumnFrequency
+    FROM ColumnRank
     WHERE rn = 1
 )
+
 SELECT 
     c.DatabaseName,
     c.SchemaName,
@@ -168,39 +150,89 @@ JOIN BaselineColumns b
     AND c.TableName = b.TableName
     AND c.ColumnName = b.ColumnName
 WHERE c.ColumnSignature <> b.ColumnSignature
-ORDER BY c.SchemaName, c.TableName, c.ColumnName;
 
--------------------------------------------------------
--- INDEX DRIFT (Most common structure baseline)
--------------------------------------------------------
+UNION ALL
 
-;WITH IndexFrequency AS
+SELECT 
+    d.DatabaseName,
+    b.SchemaName,
+    b.TableName,
+    b.ColumnName,
+    'Missing Column' AS IssueType,
+    'MISSING',
+    b.ColumnSignature
+FROM BaselineColumns b
+CROSS JOIN (SELECT DISTINCT DatabaseName FROM #Columns) d
+LEFT JOIN #Columns c
+    ON c.DatabaseName = d.DatabaseName
+   AND c.SchemaName = b.SchemaName
+   AND c.TableName = b.TableName
+   AND c.ColumnName = b.ColumnName
+WHERE c.ColumnName IS NULL
+ORDER BY SchemaName, TableName, ColumnName;
+
+------------------------------------------------------------
+-- INDEX BASELINE
+------------------------------------------------------------
+;WITH IndexCounts AS
+(
+    SELECT SchemaName, TableName, IndexName, IndexSignature,
+           COUNT(*) AS Cnt
+    FROM #Indexes
+    GROUP BY SchemaName, TableName, IndexName, IndexSignature
+),
+IndexRank AS
 (
     SELECT *,
-           COUNT(*) OVER (PARTITION BY SchemaName, TableName, IndexSignature) AS SigCount,
-           ROW_NUMBER() OVER (
-               PARTITION BY SchemaName, TableName
-               ORDER BY COUNT(*) OVER (PARTITION BY SchemaName, TableName, IndexSignature) DESC
-           ) AS rn
-    FROM #Indexes
+           ROW_NUMBER() OVER
+           (PARTITION BY SchemaName, TableName, IndexName
+            ORDER BY Cnt DESC) AS rn
+    FROM IndexCounts
 ),
 BaselineIndexes AS
 (
     SELECT *
-    FROM IndexFrequency
+    FROM IndexRank
     WHERE rn = 1
 )
-SELECT
+
+SELECT 
     i.DatabaseName,
     i.SchemaName,
     i.TableName,
     i.IndexName,
     'Index Drift' AS IssueType,
-    i.IndexSignature AS CurrentDefinition,
-    b.IndexSignature AS BaselineDefinition
+    i.IndexSignature,
+    b.IndexSignature
 FROM #Indexes i
 JOIN BaselineIndexes b
      ON i.SchemaName = b.SchemaName
     AND i.TableName = b.TableName
+    AND i.IndexName = b.IndexName
 WHERE i.IndexSignature <> b.IndexSignature
-ORDER BY i.SchemaName, i.TableName, i.IndexName;
+
+UNION ALL
+
+SELECT 
+    d.DatabaseName,
+    b.SchemaName,
+    b.TableName,
+    b.IndexName,
+    'Missing Index' AS IssueType,
+    'MISSING',
+    b.IndexSignature
+FROM BaselineIndexes b
+CROSS JOIN (SELECT DISTINCT DatabaseName FROM #Indexes) d
+LEFT JOIN #Indexes i
+    ON i.DatabaseName = d.DatabaseName
+   AND i.SchemaName = b.SchemaName
+   AND i.TableName = b.TableName
+   AND i.IndexName = b.IndexName
+WHERE i.IndexName IS NULL
+ORDER BY SchemaName, TableName, IndexName;
+
+------------------------------------------------------------
+-- CLEANUP
+------------------------------------------------------------
+DROP TABLE #Columns;
+DROP TABLE #Indexes;
