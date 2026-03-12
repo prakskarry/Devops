@@ -1,213 +1,171 @@
-SET NOCOUNT ON;
+SET ANSI_NULLS ON
+GO
 
-------------------------------------------------------------
--- TEMP TABLES
-------------------------------------------------------------
-IF OBJECT_ID('tempdb..#ColumnMeta') IS NOT NULL DROP TABLE #ColumnMeta;
-IF OBJECT_ID('tempdb..#IndexMeta') IS NOT NULL DROP TABLE #IndexMeta;
+SET QUOTED_IDENTIFIER ON
+GO
 
-CREATE TABLE #ColumnMeta
+CREATE PROCEDURE [dbo].[usp_GenerateJobScripts2]
 (
-    DatabaseName SYSNAME,
-    SchemaName   SYSNAME,
-    TableName    SYSNAME,
-    ColumnName   SYSNAME,
-    DataType     SYSNAME,
-    MaxLength    INT,
-    PrecisionVal INT,
-    ScaleVal     INT,
-    IsNullable   BIT
-);
-
-CREATE TABLE #IndexMeta
-(
-    DatabaseName SYSNAME,
-    SchemaName   SYSNAME,
-    TableName    SYSNAME,
-    IndexName    SYSNAME,
-    IndexType    NVARCHAR(60),
-    IsPrimaryKey BIT,
-    IsUnique     BIT,
-    KeyColumns   NVARCHAR(MAX),
-    IncludedColumns NVARCHAR(MAX)
-);
-
-------------------------------------------------------------
--- COLLECT METADATA FROM ALL USER DATABASES
-------------------------------------------------------------
-DECLARE @sql NVARCHAR(MAX) = '';
-
-SELECT @sql += '
-USE ' + QUOTENAME(name) + ';
-
-INSERT INTO #ColumnMeta
-SELECT
-    DB_NAME(),
-    s.name,
-    t.name,
-    c.name,
-    ty.name,
-    c.max_length,
-    c.precision,
-    c.scale,
-    c.is_nullable
-FROM sys.tables t
-JOIN sys.schemas s ON t.schema_id = s.schema_id
-JOIN sys.columns c ON t.object_id = c.object_id
-JOIN sys.types ty ON c.user_type_id = ty.user_type_id
-WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'');
-
-INSERT INTO #IndexMeta
-SELECT
-    DB_NAME(),
-    s.name,
-    t.name,
-    i.name,
-    i.type_desc,
-    i.is_primary_key,
-    i.is_unique,
-
-    -- Key Columns with Sort Order
-    ISNULL(STUFF((
-        SELECT '','' + col.name + '' '' +
-               CASE ic.is_descending_key WHEN 1 THEN ''DESC'' ELSE ''ASC'' END
-        FROM sys.index_columns ic
-        JOIN sys.columns col 
-          ON ic.object_id = col.object_id 
-         AND ic.column_id = col.column_id
-        WHERE ic.object_id = i.object_id
-          AND ic.index_id = i.index_id
-          AND ic.is_included_column = 0
-        ORDER BY ic.key_ordinal
-        FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
-    ,1,1,'''')
-    ,'''') ,
-
-    -- Included Columns
-    ISNULL(STUFF((
-        SELECT '','' + col.name
-        FROM sys.index_columns ic
-        JOIN sys.columns col 
-          ON ic.object_id = col.object_id 
-         AND ic.column_id = col.column_id
-        WHERE ic.object_id = i.object_id
-          AND ic.index_id = i.index_id
-          AND ic.is_included_column = 1
-        ORDER BY col.name
-        FOR XML PATH(''''), TYPE).value(''.'', ''NVARCHAR(MAX)'')
-    ,1,1,'''')
-    ,'''')
-FROM sys.tables t
-JOIN sys.schemas s ON t.schema_id = s.schema_id
-JOIN sys.indexes i ON t.object_id = i.object_id
-WHERE t.name IN (''MSG_1'',''MSG_2'',''Traref'')
-  AND i.type > 0;
-'
-FROM sys.databases
-WHERE state = 0
-  AND database_id > 4;
-
-EXEC (@sql);
-
-------------------------------------------------------------
--- COLUMN DISCREPANCY REPORT
-------------------------------------------------------------
-;WITH Baseline AS
-(
-    SELECT SchemaName, TableName, ColumnName,
-           DataType, MaxLength, PrecisionVal, ScaleVal, IsNullable,
-           COUNT(*) Cnt,
-           ROW_NUMBER() OVER
-           (PARTITION BY SchemaName, TableName, ColumnName
-            ORDER BY COUNT(*) DESC) rn
-    FROM #ColumnMeta
-    GROUP BY SchemaName, TableName, ColumnName,
-             DataType, MaxLength, PrecisionVal, ScaleVal, IsNullable
+    @JobDefinitionIds NVARCHAR(MAX)   -- Example: '1,2,5'
 )
-SELECT
-    c.DatabaseName,
-    c.SchemaName,
-    c.TableName,
-    'COLUMN' AS ObjectType,
-    c.ColumnName,
-    CASE
-        WHEN c.ColumnName IS NULL THEN 'Missing Column'
-        WHEN c.DataType <> b.DataType THEN 'Data Type Mismatch'
-        WHEN c.MaxLength <> b.MaxLength THEN 'Length Mismatch'
-        WHEN c.PrecisionVal <> b.PrecisionVal THEN 'Precision Mismatch'
-        WHEN c.ScaleVal <> b.ScaleVal THEN 'Scale Mismatch'
-        WHEN c.IsNullable <> b.IsNullable THEN 'Nullability Mismatch'
-    END AS Issue,
-    c.DataType,
-    c.MaxLength,
-    c.PrecisionVal,
-    c.ScaleVal,
-    c.IsNullable
-FROM Baseline b
-LEFT JOIN #ColumnMeta c
-  ON c.SchemaName = b.SchemaName
- AND c.TableName = b.TableName
- AND c.ColumnName = b.ColumnName
-WHERE b.rn = 1
-  AND (
-       c.ColumnName IS NULL
-    OR c.DataType <> b.DataType
-    OR c.MaxLength <> b.MaxLength
-    OR c.PrecisionVal <> b.PrecisionVal
-    OR c.ScaleVal <> b.ScaleVal
-    OR c.IsNullable <> b.IsNullable
-  )
+AS
+BEGIN
+    SET NOCOUNT ON;
 
-UNION ALL
+    ------------------------------------------------------------
+    -- Parse input IDs
+    ------------------------------------------------------------
+    DECLARE @Ids TABLE (JOB_DEFINITION_ID INT PRIMARY KEY);
 
-------------------------------------------------------------
--- INDEX DISCREPANCY REPORT
-------------------------------------------------------------
-SELECT
-    i.DatabaseName,
-    i.SchemaName,
-    i.TableName,
-    'INDEX' AS ObjectType,
-    i.IndexName,
-    CASE
-        WHEN i.IndexName IS NULL THEN 'Missing Index'
-        WHEN i.IndexType <> b.IndexType THEN 'Index Type Mismatch'
-        WHEN i.IsPrimaryKey <> b.IsPrimaryKey THEN 'Primary Key Flag Mismatch'
-        WHEN i.IsUnique <> b.IsUnique THEN 'Unique Flag Mismatch'
-        WHEN i.KeyColumns <> b.KeyColumns THEN 'Key Column Definition Mismatch'
-        WHEN ISNULL(i.IncludedColumns,'') <> ISNULL(b.IncludedColumns,'') THEN 'Included Column Mismatch'
-    END,
-    i.IndexType,
-    i.IsPrimaryKey,
-    i.IsUnique,
-    i.KeyColumns,
-    i.IncludedColumns
-FROM
-(
-    SELECT *,
-           ROW_NUMBER() OVER
-           (PARTITION BY SchemaName, TableName, IndexName
-            ORDER BY COUNT(*) OVER (PARTITION BY SchemaName, TableName, IndexName) DESC) rn
-    FROM #IndexMeta
-) b
-LEFT JOIN #IndexMeta i
-  ON i.SchemaName = b.SchemaName
- AND i.TableName = b.TableName
- AND i.IndexName = b.IndexName
-WHERE b.rn = 1
-  AND (
-       i.IndexName IS NULL
-    OR i.IndexType <> b.IndexType
-    OR i.IsPrimaryKey <> b.IsPrimaryKey
-    OR i.IsUnique <> b.IsUnique
-    OR i.KeyColumns <> b.KeyColumns
-    OR ISNULL(i.IncludedColumns,'') <> ISNULL(b.IncludedColumns,'')
-  )
+    INSERT INTO @Ids
+    SELECT DISTINCT TRY_CAST(value AS INT)
+    FROM STRING_SPLIT(@JobDefinitionIds, ',')
+    WHERE TRY_CAST(value AS INT) IS NOT NULL;
 
-ORDER BY DatabaseName, TableName, ObjectType, ColumnName;
+    ------------------------------------------------------------
+    -- JOB_DEFINITION SCRIPT
+    ------------------------------------------------------------
+    PRINT '/*==================================================';
+    PRINT ' JOB_DEFINITION INSERT SCRIPT';
+    PRINT '==================================================*/';
+    PRINT 'SET IDENTITY_INSERT dbo.JOB_DEFINITION ON;';
+    PRINT 'GO';
 
-------------------------------------------------------------
--- CLEANUP
-------------------------------------------------------------
-DROP TABLE #ColumnMeta;
-DROP TABLE #IndexMeta;
+    DECLARE @JD_SCRIPT NVARCHAR(MAX);
+
+    SELECT @JD_SCRIPT =
+    STUFF((
+        SELECT CHAR(13)+CHAR(10) +
+
+'
+IF EXISTS (SELECT 1 FROM dbo.JOB_DEFINITION WHERE JOB_DEFINITION_ID = ' +
+CAST(jd.JOB_DEFINITION_ID AS VARCHAR(20)) + ')
+BEGIN
+    PRINT ''JOB_DEFINITION_ID ' + CAST(jd.JOB_DEFINITION_ID AS VARCHAR(20)) + ' already exists - skipping'';
+END
+ELSE
+BEGIN
+    INSERT INTO dbo.JOB_DEFINITION
+    (JOB_DEFINITION_ID, job_name, job_command, WORKFLOW_TASK_NAME,
+     ENABLED, SR_DEFINATION_NAME, BUSINESS_CALENDAR_ID,
+     MODIFIED_BY, MODIFIED_DATE, EXPECTED_THRESHOLD,
+     CREATE_DATE, CODE_VERSION_HANDLER)
+    VALUES
+    (' +
+
+        CAST(jd.JOB_DEFINITION_ID AS VARCHAR(20)) + ',' +
+        '''' + REPLACE(jd.job_name,'''','''''') + ''',' +
+        '''' + REPLACE(jd.job_command,'''','''''') + ''',' +
+
+        CASE WHEN jd.WORKFLOW_TASK_NAME IS NULL THEN 'NULL'
+             ELSE '''' + REPLACE(jd.WORKFLOW_TASK_NAME,'''','''''') + ''''
+        END + ',' +
+
+        CASE WHEN jd.ENABLED IS NULL THEN 'NULL'
+             ELSE CAST(jd.ENABLED AS VARCHAR(10))
+        END + ',' +
+
+        CASE WHEN jd.SR_DEFINATION_NAME IS NULL THEN 'NULL'
+             ELSE '''' + REPLACE(jd.SR_DEFINATION_NAME,'''','''''') + ''''
+        END + ',' +
+
+        CASE WHEN jd.BUSINESS_CALENDAR_ID IS NULL THEN 'NULL'
+             ELSE CAST(jd.BUSINESS_CALENDAR_ID AS VARCHAR(20))
+        END + ',' +
+
+        CASE WHEN jd.MODIFIED_BY IS NULL THEN 'NULL'
+             ELSE '''' + REPLACE(jd.MODIFIED_BY,'''','''''') + ''''
+        END + ',' +
+
+        'GETDATE(),' +
+
+        CASE WHEN jd.EXPECTED_THRESHOLD IS NULL THEN 'NULL'
+             ELSE CAST(jd.EXPECTED_THRESHOLD AS VARCHAR(20))
+        END + ',' +
+
+        '''' + CONVERT(VARCHAR(23), jd.CREATE_DATE,121) + ''',' +
+
+        CASE WHEN jd.CODE_VERSION_HANDLER IS NULL THEN 'NULL'
+             ELSE '''' + REPLACE(jd.CODE_VERSION_HANDLER,'''','''''') + ''''
+        END +
+
+    ');
+END
+'
+        FROM dbo.JOB_DEFINITION jd
+        JOIN @Ids i
+          ON jd.JOB_DEFINITION_ID = i.JOB_DEFINITION_ID
+        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'),1,2,'');
+
+    IF @JD_SCRIPT IS NOT NULL
+        PRINT @JD_SCRIPT;
+
+    PRINT 'GO';
+    PRINT 'SET IDENTITY_INSERT dbo.JOB_DEFINITION OFF;';
+    PRINT 'GO';
+    PRINT '';
+
+    ------------------------------------------------------------
+    -- JOB_SCHEDULE SCRIPT
+    ------------------------------------------------------------
+    PRINT '/*==================================================';
+    PRINT ' JOB_SCHEDULE INSERT SCRIPT';
+    PRINT '==================================================*/';
+    PRINT 'SET IDENTITY_INSERT dbo.JOB_SCHEDULE ON;';
+    PRINT 'GO';
+
+    DECLARE @JS_SCRIPT NVARCHAR(MAX);
+
+    SELECT @JS_SCRIPT =
+    STUFF((
+        SELECT CHAR(13)+CHAR(10) +
+
+'
+IF EXISTS (SELECT 1 FROM dbo.JOB_SCHEDULE WHERE JOB_SCHEDULE_ID = ' +
+CAST(js.JOB_SCHEDULE_ID AS VARCHAR(20)) + ')
+BEGIN
+    PRINT ''JOB_SCHEDULE_ID ' + CAST(js.JOB_SCHEDULE_ID AS VARCHAR(20)) + ' already exists - skipping'';
+END
+ELSE
+BEGIN
+    INSERT INTO dbo.JOB_SCHEDULE
+    (JOB_SCHEDULE_ID, JOB_DEFINITION_ID, SERVER_NAME,
+     SCHEDULE_TYPE, SCHEDULE, INSTANCE_COUNT,
+     ENABLED, MODFIED_BY, MODIFIED_DATE, CREATE_DATE)
+    VALUES
+    (' +
+
+        CAST(js.JOB_SCHEDULE_ID AS VARCHAR(20)) + ',' +
+        CAST(js.JOB_DEFINITION_ID AS VARCHAR(20)) + ',' +
+        '''' + REPLACE(js.SERVER_NAME,'''','''''') + ''',' +
+        '''' + REPLACE(js.SCHEDULE_TYPE,'''','''''') + ''',' +
+        '''' + REPLACE(js.SCHEDULE,'''','''''') + ''',' +
+        CAST(js.INSTANCE_COUNT AS VARCHAR(10)) + ',' +
+
+        CASE WHEN js.ENABLED IS NULL THEN 'NULL'
+             ELSE CAST(js.ENABLED AS VARCHAR(10))
+        END + ',' +
+
+        CASE WHEN js.MODFIED_BY IS NULL THEN 'NULL'
+             ELSE '''' + REPLACE(js.MODFIED_BY,'''','''''') + ''''
+        END + ',' +
+
+        'GETDATE(),GETDATE()' +
+
+    ');
+END
+'
+        FROM dbo.JOB_SCHEDULE js
+        JOIN @Ids i
+          ON js.JOB_DEFINITION_ID = i.JOB_DEFINITION_ID
+        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'),1,2,'');
+
+    IF @JS_SCRIPT IS NOT NULL
+        PRINT @JS_SCRIPT;
+
+    PRINT 'GO';
+    PRINT 'SET IDENTITY_INSERT dbo.JOB_SCHEDULE OFF;';
+    PRINT 'GO';
+
+END
+GO
