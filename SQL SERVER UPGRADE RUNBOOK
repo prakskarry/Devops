@@ -1,0 +1,330 @@
+SQL SERVER UPGRADE RUNBOOK (2019 → 2022)
+========================================
+
+Environments: DEV → QA → UAT → PROD
+Approach: In-place upgrade (sequential promotion)
+
+================================================================================
+1. PRE-UPGRADE PREPARATION (HARDENING PHASE)
+================================================================================
+
+1.1 PATCH BASELINE (SQL 2019)
+----------------------------
+- Upgrade SQL Server 2019 to latest CU
+- Reboot server if required
+
+Capture build details:
+SELECT @@VERSION;
+SELECT SERVERPROPERTY('ProductVersion'), SERVERPROPERTY('ProductLevel'), SERVERPROPERTY('Edition');
+
+Reason:
+Stabilizes engine before introducing new version.
+
+--------------------------------------------------------------------------------
+1.2 FULL ENVIRONMENT INVENTORY (MANDATORY)
+--------------------------------------------------------------------------------
+
+Capture and store externally (not on same server):
+
+Instance Config:
+EXEC sp_configure;
+SELECT * FROM sys.configurations;
+
+Database Files:
+SELECT name, physical_name FROM sys.master_files;
+
+Logins:
+SELECT name, type_desc FROM sys.server_principals;
+
+SQL Agent Jobs:
+SELECT name FROM msdb.dbo.sysjobs;
+
+Linked Servers:
+EXEC sp_linkedservers;
+
+Also document:
+- DB Mail configuration
+- Credentials / Proxies
+- Endpoints
+
+--------------------------------------------------------------------------------
+1.3 FILE LOCATION & STORAGE CHECK
+--------------------------------------------------------------------------------
+
+Document:
+- MDF / NDF / LDF paths
+- TempDB configuration
+- Default data/log directories
+- Backup directories
+
+Validate:
+- Disk free space (data + log + tempdb growth)
+- Instant File Initialization enabled
+
+--------------------------------------------------------------------------------
+1.4 BACKUP STRATEGY (MULTI-LAYER)
+--------------------------------------------------------------------------------
+
+A. SQL Backups
+--------------
+- Full backup of ALL databases (system + user)
+
+Verify:
+RESTORE VERIFYONLY FROM DISK = 'backup_path';
+
+B. File-Level Backup (Safety Net)
+--------------------------------
+Take OS/SAN snapshot or copy:
+- MDF / NDF / LDF files
+- System database files
+
+Note:
+Use VSS-aware backup OR ensure SQL Server is stopped during copy.
+
+C. VM Snapshot (if available)
+-----------------------------
+- Take snapshot just before upgrade
+
+--------------------------------------------------------------------------------
+1.5 DATABASE HEALTH CHECK
+--------------------------------------------------------------------------------
+
+Run:
+DBCC CHECKDB WITH NO_INFOMSGS, ALL_ERRORMSGS;
+
+Check:
+SELECT * FROM msdb.dbo.suspect_pages;
+
+Review:
+- Failed jobs (last 7 days)
+
+--------------------------------------------------------------------------------
+1.6 HA / DR PREPARATION
+--------------------------------------------------------------------------------
+
+If applicable:
+- Disable Log Shipping
+- Script Replication
+- Remove node from AlwaysOn AG before upgrade
+
+--------------------------------------------------------------------------------
+1.7 PRE-UPGRADE ACTIONS
+--------------------------------------------------------------------------------
+
+- Disable SQL Server Agent Jobs
+- Note linked servers, SSIS, SSRS
+- Keep SQL Server 2022 installer ready
+- Confirm license availability
+
+================================================================================
+2. UPGRADE EXECUTION (PER ENVIRONMENT)
+================================================================================
+
+Step 1  - Communicate downtime window
+Step 2  - Confirm backups and file-level copy completed
+Step 3  - Take VM snapshot
+Step 4  - Disable SQL Agent jobs
+
+Step 5  - Run upgrade:
+
+setup.exe /ACTION=Upgrade /INSTANCENAME=<InstanceName>
+
+Logs:
+C:\Program Files\Microsoft SQL Server\160\Setup Bootstrap\Log\
+
+Step 6  - Apply latest SQL Server 2022 CU
+
+Step 7  - Restart services
+
+Step 8  - Validate upgrade:
+SELECT @@VERSION;
+SELECT name, compatibility_level FROM sys.databases;
+
+Step 9  - Run DBCC CHECKDB
+
+Step 10 - Re-enable SQL Agent jobs
+
+Step 11 - Validate linked servers
+
+Step 12 - Hand over to testing team
+
+Note:
+Do NOT change compatibility level to 160 yet.
+
+================================================================================
+3. POST-UPGRADE STABILIZATION
+================================================================================
+
+- Update statistics:
+  EXEC sp_updatestats;
+
+- Enable Query Store (if not enabled)
+
+- Validate:
+  - TempDB configuration
+  - Jobs execution
+  - Application connectivity
+
+- Monitor:
+  - CPU / IO
+  - Wait stats
+  - Blocking
+
+================================================================================
+4. PRODUCTION CONTROLS
+================================================================================
+
+- Approved maintenance window required
+- Notify users at least 5 days in advance
+- Keep support team on standby
+- Freeze deployments during upgrade
+
+================================================================================
+5. ROLLBACK STRATEGY
+================================================================================
+
+--------------------------------------------------------------------------------
+OPTION A – VM SNAPSHOT (FASTEST)
+--------------------------------------------------------------------------------
+
+1. Stop SQL Services
+2. Revert VM snapshot
+3. Start SQL Server 2019
+4. Run DBCC CHECKDB
+5. Enable jobs
+6. Notify teams
+
+--------------------------------------------------------------------------------
+OPTION B – BACKUP RESTORE
+--------------------------------------------------------------------------------
+
+1. Stop SQL Services
+2. Uninstall SQL Server 2022
+3. Reinstall SQL Server 2019 (same patch level)
+4. Restore system databases
+5. Restore user databases
+6. Run DBCC CHECKDB
+7. Enable jobs
+
+--------------------------------------------------------------------------------
+OPTION C – FULL REBUILD + RESTORE (LAST RESORT)
+--------------------------------------------------------------------------------
+
+PHASE 1 – STABILIZE
+- Stop all SQL services
+- Capture logs (ERRORLOG, Event Viewer, Setup logs)
+
+PHASE 2 – REMOVE SQL 2022
+- Uninstall all SQL components
+- Verify services removed
+- Clean leftover folders (do not delete backups/data files)
+
+PHASE 3 – REINSTALL SQL 2019
+- Same edition, instance name, collation
+- Same service accounts
+- Configure data/log/tempdb paths
+- Apply same CU level as before upgrade
+
+PHASE 4 – RESTORE SYSTEM DATABASES
+
+Start single-user mode:
+net stop MSSQLSERVER
+net start MSSQLSERVER /m
+
+Restore master:
+RESTORE DATABASE master FROM DISK='path' WITH REPLACE;
+
+Restart SQL:
+net start MSSQLSERVER
+
+Restore msdb:
+RESTORE DATABASE msdb FROM DISK='path' WITH REPLACE;
+
+Restore model:
+RESTORE DATABASE model FROM DISK='path' WITH REPLACE;
+
+PHASE 5 – RESTORE USER DATABASES
+
+RESTORE DATABASE dbname
+FROM DISK='path'
+WITH MOVE ..., REPLACE, RECOVERY;
+
+Fallback (file attach):
+CREATE DATABASE dbname ON
+(FILENAME='mdf'), (FILENAME='ldf')
+FOR ATTACH;
+
+PHASE 6 – POST RESTORE FIXES
+
+- Fix orphaned users
+- Validate logins (SID match)
+- Re-enable SQL Agent jobs
+- Reapply server configs
+- Validate linked servers, DB Mail, credentials
+
+PHASE 7 – VALIDATION
+
+DBCC CHECKDB;
+
+SELECT name, state_desc FROM sys.databases;
+
+Check jobs and schedules
+
+PHASE 8 – APPLICATION TESTING
+
+- Connectivity validation
+- Critical transaction testing
+- Reporting and batch job validation
+
+Compatibility Level Note:
+- All databases remain at compatibility level 150 after upgrade
+- SQL Server 2022 engine is in use, but query behavior remains SQL 2019 compatible
+
+Important:
+- Do NOT change compatibility level during initial testing
+- Any move to compatibility level 160 must be planned and tested separately
+
+If performance issues are observed:
+- Compare execution plans before and after upgrade
+- Use Query Store to identify regressions
+
+PHASE 9 – STABILIZATION
+
+Monitor:
+- CPU / IO
+- Wait stats
+- Blocking
+
+Check logs for:
+- Login failures
+- Job failures
+
+--------------------------------------------------------------------------------
+ESTIMATED TIMES
+--------------------------------------------------------------------------------
+
+DEV / QA   : 1–2 hours
+UAT        : 2–3 hours
+PROD       : 4–8+ hours
+
+--------------------------------------------------------------------------------
+COMMON FAILURE POINTS
+--------------------------------------------------------------------------------
+
+- Missing logins
+- Collation mismatch
+- Patch level mismatch
+- File path issues
+- Missing jobs
+- Broken linked servers
+
+--------------------------------------------------------------------------------
+FINAL NOTE
+--------------------------------------------------------------------------------
+
+If rollback (Option C) is not tested in DEV/QA,
+then rollback readiness is not real.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
