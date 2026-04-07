@@ -1,6 +1,7 @@
+USE [Temp]
+GO
 
-
-ALTER PROCEDURE [dbo].[usp_GenerateJobScripts5]
+CREATE PROCEDURE [dbo].[usp_GenerateJobScripts6]
 (
     @JobDefinitionIds NVARCHAR(MAX)   -- Example: '1,2,5'
 )
@@ -18,11 +19,14 @@ BEGIN
     FROM STRING_SPLIT(@JobDefinitionIds, ',')
     WHERE TRY_CAST(value AS INT) IS NOT NULL;
 
+    -- Shared helper for chunked printing
+    DECLARE @Row  NVARCHAR(MAX);
+    DECLARE @Pos  INT;
+
     ------------------------------------------------------------
-    -- Shared print helper variables
+    -- Macro to print one NVARCHAR(MAX) row in 4000-char chunks
+    -- (inlined below every place we need it)
     ------------------------------------------------------------
-    DECLARE @PrintStr  NVARCHAR(MAX);
-    DECLARE @Pos       INT;
 
     ------------------------------------------------------------
     -- JOB_DEFINITION SCRIPT
@@ -33,19 +37,18 @@ BEGIN
     PRINT 'SET IDENTITY_INSERT dbo.JOB_DEFINITION ON;';
     PRINT 'GO';
 
-    DECLARE @JD_SCRIPT            NVARCHAR(MAX) = N'';
-    DECLARE @JD_ID                INT;
-    DECLARE @job_name             NVARCHAR(MAX);
-    DECLARE @job_command          NVARCHAR(MAX);
-    DECLARE @WORKFLOW_TASK_NAME   NVARCHAR(MAX);
-    DECLARE @ENABLED              INT;
-    DECLARE @SR_DEFINATION_NAME   NVARCHAR(MAX);
-    DECLARE @BUSINESS_CALENDAR_ID INT;
-    DECLARE @MODIFIED_BY          NVARCHAR(MAX);
-    DECLARE @EXPECTED_THRESHOLD   INT;
-    DECLARE @CREATE_DATE          DATETIME;
-    DECLARE @CODE_VERSION_HANDLER NVARCHAR(MAX);
-    DECLARE @JD_ROW               NVARCHAR(MAX);
+    DECLARE
+        @JD_ID                INT,
+        @job_name             NVARCHAR(MAX),
+        @job_command          NVARCHAR(MAX),
+        @WORKFLOW_TASK_NAME   NVARCHAR(MAX),
+        @ENABLED              INT,
+        @SR_DEFINATION_NAME   NVARCHAR(MAX),
+        @BUSINESS_CALENDAR_ID INT,
+        @MODIFIED_BY          NVARCHAR(MAX),
+        @EXPECTED_THRESHOLD   INT,
+        @CREATE_DATE          DATETIME,
+        @CODE_VERSION_HANDLER NVARCHAR(MAX);
 
     DECLARE cur_JD CURSOR LOCAL FAST_FORWARD FOR
         SELECT
@@ -71,42 +74,47 @@ BEGIN
 
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        -- Build one row's script into a local variable first, then append.
-        -- Every piece is cast to NVARCHAR(MAX) so the accumulator never
-        -- silently downgrades to NVARCHAR(4000).
-        SET @JD_ROW = CAST(
-            N'
-IF EXISTS (SELECT 1 FROM dbo.JOB_DEFINITION WHERE JOB_DEFINITION_ID = '
-            + CAST(@JD_ID AS NVARCHAR(20)) + N')
-BEGIN
-    PRINT ''JOB_DEFINITION_ID ' + CAST(@JD_ID AS NVARCHAR(20)) + N' already exists - skipping'';
-END
-ELSE
-BEGIN
-    INSERT INTO dbo.JOB_DEFINITION
-        (JOB_DEFINITION_ID, job_name, job_command, WORKFLOW_TASK_NAME,
-         ENABLED, SR_DEFINATION_NAME, BUSINESS_CALENDAR_ID,
-         MODIFIED_BY, MODIFIED_DATE, EXPECTED_THRESHOLD,
-         CREATE_DATE, CODE_VERSION_HANDLER)
-    VALUES
-        ('
-            + CAST(@JD_ID AS NVARCHAR(20))                                                    + N','
-            + N'''' + REPLACE(@job_name,            N'''', N'''''') + N''','
-            + N'''' + REPLACE(@job_command,          N'''', N'''''') + N''','
-            + ISNULL(N'''' + REPLACE(@WORKFLOW_TASK_NAME,   N'''', N'''''') + N'''', N'NULL') + N','
-            + ISNULL(CAST(@ENABLED AS NVARCHAR(10)),                                  N'NULL') + N','
-            + ISNULL(N'''' + REPLACE(@SR_DEFINATION_NAME,  N'''', N'''''') + N'''', N'NULL') + N','
-            + ISNULL(CAST(@BUSINESS_CALENDAR_ID AS NVARCHAR(20)),                     N'NULL') + N','
-            + ISNULL(N'''' + REPLACE(@MODIFIED_BY,         N'''', N'''''') + N'''', N'NULL') + N','
-            + N'GETDATE(),'
-            + ISNULL(CAST(@EXPECTED_THRESHOLD AS NVARCHAR(20)),                       N'NULL') + N','
-            + N'''' + CONVERT(NVARCHAR(23), @CREATE_DATE, 121)                               + N''','
-            + ISNULL(N'''' + REPLACE(@CODE_VERSION_HANDLER,N'''', N'''''') + N'''', N'NULL')
-            + N');
-END
-'       AS NVARCHAR(MAX));   -- <-- explicit cast keeps accumulator at MAX
+        -- Build this single row into @Row (one record = manageable size)
+        SET @Row = N'';
+        SET @Row = @Row + N'IF EXISTS (SELECT 1 FROM dbo.JOB_DEFINITION WHERE JOB_DEFINITION_ID = ';
+        SET @Row = @Row + CAST(@JD_ID AS NVARCHAR(20));
+        SET @Row = @Row + N')' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'BEGIN' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'    PRINT ''JOB_DEFINITION_ID ';
+        SET @Row = @Row + CAST(@JD_ID AS NVARCHAR(20));
+        SET @Row = @Row + N' already exists - skipping'';' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'END' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'ELSE' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'BEGIN' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'    INSERT INTO dbo.JOB_DEFINITION' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'        (JOB_DEFINITION_ID, job_name, job_command, WORKFLOW_TASK_NAME,' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'         ENABLED, SR_DEFINATION_NAME, BUSINESS_CALENDAR_ID,' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'         MODIFIED_BY, MODIFIED_DATE, EXPECTED_THRESHOLD,' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'         CREATE_DATE, CODE_VERSION_HANDLER)' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'    VALUES' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'        (';
+        SET @Row = @Row + CAST(@JD_ID AS NVARCHAR(20))                                                         + N',';
+        SET @Row = @Row + N'''' + REPLACE(@job_name,             N'''', N'''''') + N''','            ;
+        SET @Row = @Row + N'''' + REPLACE(@job_command,          N'''', N'''''') + N''','            ;
+        SET @Row = @Row + ISNULL(N'''' + REPLACE(@WORKFLOW_TASK_NAME,  N'''', N'''''') + N'''', N'NULL') + N',';
+        SET @Row = @Row + ISNULL(CAST(@ENABLED AS NVARCHAR(10)),                                 N'NULL') + N',';
+        SET @Row = @Row + ISNULL(N'''' + REPLACE(@SR_DEFINATION_NAME, N'''', N'''''') + N'''', N'NULL') + N',';
+        SET @Row = @Row + ISNULL(CAST(@BUSINESS_CALENDAR_ID AS NVARCHAR(20)),                    N'NULL') + N',';
+        SET @Row = @Row + ISNULL(N'''' + REPLACE(@MODIFIED_BY,        N'''', N'''''') + N'''', N'NULL') + N',';
+        SET @Row = @Row + N'GETDATE(),';
+        SET @Row = @Row + ISNULL(CAST(@EXPECTED_THRESHOLD AS NVARCHAR(20)),                      N'NULL') + N',';
+        SET @Row = @Row + N'''' + CONVERT(NVARCHAR(23), @CREATE_DATE, 121)                               + N''',';
+        SET @Row = @Row + ISNULL(N'''' + REPLACE(@CODE_VERSION_HANDLER, N'''', N'''''') + N'''', N'NULL');
+        SET @Row = @Row + N');' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'END' + NCHAR(13) + NCHAR(10);
 
-        SET @JD_SCRIPT = @JD_SCRIPT + @JD_ROW;
+        -- Print this single row in 4000-char chunks
+        SET @Pos = 1;
+        WHILE @Pos <= LEN(@Row)
+        BEGIN
+            PRINT SUBSTRING(@Row, @Pos, 4000);
+            SET @Pos = @Pos + 4000;
+        END
 
         FETCH NEXT FROM cur_JD INTO
             @JD_ID, @job_name, @job_command, @WORKFLOW_TASK_NAME,
@@ -116,15 +124,6 @@ END
 
     CLOSE cur_JD;
     DEALLOCATE cur_JD;
-
-    -- Print in 4000-char chunks to respect PRINT's own limit
-    SET @PrintStr = @JD_SCRIPT;
-    SET @Pos = 1;
-    WHILE @Pos <= LEN(@PrintStr)
-    BEGIN
-        PRINT SUBSTRING(@PrintStr, @Pos, 4000);
-        SET @Pos = @Pos + 4000;
-    END
 
     PRINT 'GO';
     PRINT 'SET IDENTITY_INSERT dbo.JOB_DEFINITION OFF;';
@@ -140,16 +139,15 @@ END
     PRINT 'SET IDENTITY_INSERT dbo.JOB_SCHEDULE ON;';
     PRINT 'GO';
 
-    DECLARE @JS_SCRIPT      NVARCHAR(MAX) = N'';
-    DECLARE @JS_ID          INT;
-    DECLARE @JS_JD_ID       INT;
-    DECLARE @SERVER_NAME    NVARCHAR(MAX);
-    DECLARE @SCHEDULE_TYPE  NVARCHAR(MAX);
-    DECLARE @SCHEDULE       NVARCHAR(MAX);
-    DECLARE @INSTANCE_COUNT INT;
-    DECLARE @JS_ENABLED     INT;
-    DECLARE @MODFIED_BY     NVARCHAR(MAX);
-    DECLARE @JS_ROW         NVARCHAR(MAX);
+    DECLARE
+        @JS_ID          INT,
+        @JS_JD_ID       INT,
+        @SERVER_NAME    NVARCHAR(MAX),
+        @SCHEDULE_TYPE  NVARCHAR(MAX),
+        @SCHEDULE       NVARCHAR(MAX),
+        @INSTANCE_COUNT INT,
+        @JS_ENABLED     INT,
+        @MODFIED_BY     NVARCHAR(MAX);
 
     DECLARE cur_JS CURSOR LOCAL FAST_FORWARD FOR
         SELECT
@@ -171,34 +169,42 @@ END
 
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        SET @JS_ROW = CAST(
-            N'
-IF EXISTS (SELECT 1 FROM dbo.JOB_SCHEDULE WHERE JOB_SCHEDULE_ID = '
-            + CAST(@JS_ID AS NVARCHAR(20)) + N')
-BEGIN
-    PRINT ''JOB_SCHEDULE_ID ' + CAST(@JS_ID AS NVARCHAR(20)) + N' already exists - skipping'';
-END
-ELSE
-BEGIN
-    INSERT INTO dbo.JOB_SCHEDULE
-        (JOB_SCHEDULE_ID, JOB_DEFINITION_ID, SERVER_NAME,
-         SCHEDULE_TYPE, SCHEDULE, INSTANCE_COUNT,
-         ENABLED, MODFIED_BY, MODIFIED_DATE, CREATE_DATE)
-    VALUES
-        ('
-            + CAST(@JS_ID          AS NVARCHAR(20))                                         + N','
-            + CAST(@JS_JD_ID       AS NVARCHAR(20))                                         + N','
-            + N'''' + REPLACE(@SERVER_NAME,   N'''', N'''''') + N''','
-            + N'''' + REPLACE(@SCHEDULE_TYPE, N'''', N'''''') + N''','
-            + N'''' + REPLACE(@SCHEDULE,      N'''', N'''''') + N''','
-            + CAST(@INSTANCE_COUNT AS NVARCHAR(10))                                         + N','
-            + ISNULL(CAST(@JS_ENABLED AS NVARCHAR(10)),                             N'NULL') + N','
-            + ISNULL(N'''' + REPLACE(@MODFIED_BY, N'''', N'''''') + N'''', N'NULL')
-            + N',GETDATE(),GETDATE());
-END
-'       AS NVARCHAR(MAX));
+        SET @Row = N'';
+        SET @Row = @Row + N'IF EXISTS (SELECT 1 FROM dbo.JOB_SCHEDULE WHERE JOB_SCHEDULE_ID = ';
+        SET @Row = @Row + CAST(@JS_ID AS NVARCHAR(20));
+        SET @Row = @Row + N')' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'BEGIN' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'    PRINT ''JOB_SCHEDULE_ID ';
+        SET @Row = @Row + CAST(@JS_ID AS NVARCHAR(20));
+        SET @Row = @Row + N' already exists - skipping'';' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'END' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'ELSE' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'BEGIN' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'    INSERT INTO dbo.JOB_SCHEDULE' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'        (JOB_SCHEDULE_ID, JOB_DEFINITION_ID, SERVER_NAME,' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'         SCHEDULE_TYPE, SCHEDULE, INSTANCE_COUNT,' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'         ENABLED, MODFIED_BY, MODIFIED_DATE, CREATE_DATE)' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'    VALUES' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'        (';
+        SET @Row = @Row + CAST(@JS_ID       AS NVARCHAR(20))                                            + N',';
+        SET @Row = @Row + CAST(@JS_JD_ID    AS NVARCHAR(20))                                            + N',';
+        SET @Row = @Row + N'''' + REPLACE(@SERVER_NAME,   N'''', N'''''') + N''','                       ;
+        SET @Row = @Row + N'''' + REPLACE(@SCHEDULE_TYPE, N'''', N'''''') + N''','                       ;
+        SET @Row = @Row + N'''' + REPLACE(@SCHEDULE,      N'''', N'''''') + N''','                       ;
+        SET @Row = @Row + CAST(@INSTANCE_COUNT AS NVARCHAR(10))                                         + N',';
+        SET @Row = @Row + ISNULL(CAST(@JS_ENABLED AS NVARCHAR(10)),                             N'NULL') + N',';
+        SET @Row = @Row + ISNULL(N'''' + REPLACE(@MODFIED_BY, N'''', N'''''') + N'''', N'NULL')         + N',';
+        SET @Row = @Row + N'GETDATE(),GETDATE()';
+        SET @Row = @Row + N');' + NCHAR(13) + NCHAR(10);
+        SET @Row = @Row + N'END' + NCHAR(13) + NCHAR(10);
 
-        SET @JS_SCRIPT = @JS_SCRIPT + @JS_ROW;
+        -- Print this single row in 4000-char chunks
+        SET @Pos = 1;
+        WHILE @Pos <= LEN(@Row)
+        BEGIN
+            PRINT SUBSTRING(@Row, @Pos, 4000);
+            SET @Pos = @Pos + 4000;
+        END
 
         FETCH NEXT FROM cur_JS INTO
             @JS_ID, @JS_JD_ID, @SERVER_NAME, @SCHEDULE_TYPE,
@@ -207,15 +213,6 @@ END
 
     CLOSE cur_JS;
     DEALLOCATE cur_JS;
-
-    -- Print in 4000-char chunks
-    SET @PrintStr = @JS_SCRIPT;
-    SET @Pos = 1;
-    WHILE @Pos <= LEN(@PrintStr)
-    BEGIN
-        PRINT SUBSTRING(@PrintStr, @Pos, 4000);
-        SET @Pos = @Pos + 4000;
-    END
 
     PRINT 'GO';
     PRINT 'SET IDENTITY_INSERT dbo.JOB_SCHEDULE OFF;';
