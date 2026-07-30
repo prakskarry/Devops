@@ -1,0 +1,144 @@
+# SQL Server Migration Automation
+
+Act as a Senior SQL Server DBA and Migration Architect.
+
+Design a practical, production-ready SQL Server migration solution with reusable PowerShell and SQL scripts. Focus on implementation, automation and validation. Avoid unnecessary theory or lengthy explanations.
+
+## Environment
+
+**Source**
+
+* SQL Server 2016 Enterprise
+
+**Destination**
+
+* SQL Server 2019 Standard
+
+**Databases**
+
+* ~900
+
+**Total Size**
+
+* ~2 TB
+
+## Migration Strategy
+
+The migration approach is fixed.
+
+**Day Before Migration**
+
+* Take FULL backups of all databases.
+* Restore all databases on the destination using **WITH NORECOVERY**.
+
+**Cutover Day**
+
+* Disable SQL Agent Jobs on the source.
+* Take Transaction Log backups.
+* Verify all transaction log backups completed successfully.
+* Change all source databases to **SINGLE_USER WITH ROLLBACK IMMEDIATE**.
+* Copy transaction log backup files to the destination.
+* Restore transaction log backups using **WITH RECOVERY**.
+* Validate the migration.
+* Enable only the SQL Agent Jobs on the destination that were originally enabled on the source before migration.
+* Leave all SQL Agent Jobs disabled on the source.
+
+Do **not** recommend or use:
+
+* Log Shipping
+* Database Mirroring
+* Replication
+* Always On Availability Groups
+
+Do not include application-related activities such as stopping services, application validation, or redirecting application connections.
+
+---
+
+# Script 1 - Pre-Cutover
+
+Create a reusable PowerShell script that:
+
+* Validates source and destination SQL Server versions.
+* Checks disk space.
+* Validates recovery models.
+* Detects Enterprise Edition features that are unsupported on SQL Server 2019 Standard.
+* Migrates all required server-level objects.
+* Migrates SQL Server configuration (sp_configure, Max Memory, MAXDOP, Cost Threshold, etc.).
+* Migrates TDE certificates and any required encryption objects.
+* Captures the enabled/disabled status of every SQL Agent Job and stores it in a CSV file.
+* Performs validation and generates a concise report.
+
+---
+
+# Script 2 - Full Backup & Restore (Day Before)
+
+Create a reusable PowerShell script that:
+
+* Performs parallel FULL backups of all user databases.
+* Uses compression and checksum.
+* Copies backup files to the destination.
+* Restores all databases using **WITH NORECOVERY**.
+* Supports configurable parallelism.
+* Generates a concise success/failure report.
+
+---
+
+# Script 3 - Cutover
+
+Create a reusable PowerShell script that:
+
+* Disables all SQL Agent Jobs on the source.
+* Takes transaction log backups for all databases.
+* Verifies every backup completed successfully.
+* Changes all databases to **SINGLE_USER WITH ROLLBACK IMMEDIATE**.
+* Copies transaction log backup files to the destination.
+* Restores transaction log backups using **WITH RECOVERY**.
+* Validates that all databases are ONLINE.
+* Validates login mappings.
+* Validates SQL Agent Jobs.
+* Enables only those SQL Agent Jobs on the destination that were originally enabled on the source using the CSV captured during Script 1.
+* Ensures all SQL Agent Jobs remain disabled on the source.
+* Generates a concise success/failure report.
+
+---
+
+# Script 4 - Dry Run
+
+Create a reusable PowerShell script for migration rehearsal.
+
+The script should:
+
+* Perform FULL backups of all user databases.
+* Copy backup files to the destination.
+* Restore all databases using **WITH RECOVERY** (not NORECOVERY).
+* Measure backup throughput.
+* Measure restore throughput.
+* Measure copy throughput.
+* Record total backup time.
+* Record total copy time.
+* Record total restore time.
+* Produce an estimated production cutover duration based on measured performance.
+* Generate a concise dry-run report.
+
+---
+
+# General Requirements
+
+* Use PowerShell with dbatools wherever appropriate.
+* Keep scripts modular and reusable.
+* Store configuration (servers, backup paths, parallelism, exclusions, etc.) in a configuration file rather than hard-coding values.
+* Support configurable parallel execution.
+* Include logging, progress reporting and basic error handling.
+* Scripts should be rerunnable without requiring manual cleanup.
+* Generate concise HTML or CSV reports.
+
+Provide:
+
+* Folder structure.
+* Configuration file format.
+* PowerShell scripts.
+* SQL scripts where required.
+* Any dbatools commands used.
+* Brief implementation notes where necessary.
+
+Keep the solution practical, concise and suitable for production use.
